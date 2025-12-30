@@ -5,8 +5,7 @@ import unicodedata
 from datetime import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import threading
-from flask import Flask
+from flask import Flask, request
 
 # carregar as variaves do .env
 load_dotenv()
@@ -14,16 +13,27 @@ load_dotenv()
 #busca o token
 TOKEN_BOT = os.getenv('TELEGRAM_TOKEN')
 SHEET_KEY = os.getenv('SHEET_KEY')
+WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://controlgastosbot.onrender.com')
 
 # cria uma instancia do bot
 bot = telebot.TeleBot(TOKEN_BOT)
 
-# Cria uma instância do Flask para manter o serviço vivo no Render
+# Cria uma instância do Flask para receber webhooks do Telegram
 app = Flask(__name__)
 
 @app.route('/')
 def health_check():
     return {'status': 'ok', 'message': 'Bot is running'}, 200
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Endpoint para receber atualizações do Telegram"""
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return '', 200
+    return '', 403
 
 # --- CONFIGURAÇÃO GOOGLE SHEETS ---
 try:
@@ -173,16 +183,18 @@ def processar_gastos(message):
     
     bot.reply_to(message, mensagem_resposta, parse_mode="Markdown")
 
-def run_bot():
-    """Executa o bot em uma thread separada"""
-    print("✅ Bot iniciado com sucesso")
-    bot.infinity_polling()
-
 if __name__ == "__main__":
-    # Inicia o bot em uma thread separada
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
+    # Remove webhook anterior se existir (opcional, mas recomendado)
+    try:
+        bot.remove_webhook()
+    except:
+        pass
     
-    # Inicia o servidor Flask (necessário para Render manter o serviço ativo)
+    # Configura o webhook
+    webhook_url = f"{WEBHOOK_URL}/webhook"
+    bot.set_webhook(url=webhook_url)
+    print(f"✅ Webhook configurado: {webhook_url}")
+    
+    # Inicia o servidor Flask
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port, debug=False)
