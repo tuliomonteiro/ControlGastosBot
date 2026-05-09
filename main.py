@@ -3,9 +3,11 @@ import telebot
 from dotenv import load_dotenv
 import unicodedata
 from datetime import datetime
+import re
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from flask import Flask, request
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # carregar as variaves do .env
 load_dotenv()
@@ -74,6 +76,27 @@ map = {
   'Impostos': ['IMPOSTO', 'TAXA', 'SAQUE', 'IMPOSTOS']
 }
 
+BANK_OPTIONS = [
+    ("CONTINENTAL", "Continental"),
+    ("UENO", "Ueno"),
+    ("ITAU", "Itau"),
+    ("PERSONAL", "Personal"),
+    ("EFETIVO", "Efetivo"),
+]
+
+PAYMENT_OPTIONS = [
+    ("CREDITO", "Credito"),
+    ("DEBITO", "Debito"),
+]
+
+INVOICE_OPTIONS = [
+    ("SI", "Si"),
+    ("NO", "No"),
+]
+
+pending_expenses = {}
+user_defaults = {}
+
 def identificar_categoria(descricao, mapeamento):
     # remove acentos
     descricao_limpa = "".join(
@@ -88,20 +111,151 @@ def identificar_categoria(descricao, mapeamento):
                 return categoria
     return "OUTRA"        
 
-# --- HANDLER 2: OUVINTE GERAL (FINANÇAS) ---
-@bot.message_handler(func=lambda message: True)
-def processar_gastos(message):
-    print(f"NOME DO CHAT: {message.chat.title} | ID: {message.chat.id}")
-    # mensagem original
-    mensagem_bruta = message.text
 
-    # transforma a mensagem em uma lista para colocar em partes, elimina espaços extras e maiscula
-    partes = [" ".join(p.split()) for p in mensagem_bruta.split(';')]    
-    
+def normalizar_texto(texto):
+    return "".join(
+        c for c in unicodedata.normalize('NFD', texto.upper().strip())
+        if unicodedata.category(c) != 'Mn'
+    )
 
+
+def parse_valor_brlike(valor_texto):
+    valor_limpo = valor_texto.strip().lower().replace("gs", "").replace(" ", "")
+    multiplicador = 1
+
+    if valor_limpo.endswith("mil"):
+        multiplicador = 1000
+        valor_limpo = valor_limpo[:-3]
+    elif valor_limpo.endswith("k"):
+        multiplicador = 1000
+        valor_limpo = valor_limpo[:-1]
+
+    valor_limpo = valor_limpo.replace(".", "").replace(",", ".")
+    valor = float(valor_limpo) * multiplicador
+    return valor
+
+
+def parse_expense_text(mensagem):
+    texto = " ".join(mensagem.split())
+    match = re.match(r"^(?P<desc>.+?)\s+(?P<valor>\d[\d\.,]*(?:\s*(?:k|mil))?)$", texto, re.IGNORECASE)
+    if not match:
+        return None
+
+    desc = match.group("desc").strip().upper()
+    valor = parse_valor_brlike(match.group("valor"))
+    return desc, valor
+
+
+def formatar_guaranis(valor):
+    return f"{valor:,.0f}".replace(",", ".")
+
+
+def build_keyboard(options, prefix, row_width=2):
+    keyboard = InlineKeyboardMarkup(row_width=row_width)
+    buttons = [InlineKeyboardButton(label, callback_data=f"{prefix}:{value}") for value, label in options]
+    keyboard.add(*buttons)
+    keyboard.add(InlineKeyboardButton("Cancelar", callback_data="expense:cancel"))
+    return keyboard
+
+
+def build_confirmation_keyboard():
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("Salvar", callback_data="expense:confirm"),
+        InlineKeyboardButton("Cancelar", callback_data="expense:cancel"),
+    )
+    return keyboard
+
+
+def montar_resumo_gasto(expense):
+    return (
+        "🧾 *Confirme o gasto*\n\n"
+        f"📝 *Descricao:* {expense['desc']}\n"
+        f"🏷️ *Categoria:* {expense['cat']}\n"
+        f"💵 *Valor:* {formatar_guaranis(expense['valor_final'])} Gs\n"
+        f"🏦 *Banco:* {expense['banco']}\n"
+        f"💳 *Forma:* {expense['forma']}\n"
+        f"🧾 *Factura:* {expense['factura']}"
+    )
+
+
+def iniciar_fluxo_interativo(message, desc, valor):
+    chat_id = message.chat.id
+    defaults = user_defaults.get(chat_id, {})
+    cat = identificar_categoria(desc, map).upper()
+
+    pending_expenses[chat_id] = {
+        "desc": desc,
+        "valor": valor,
+        "moeda": "Gs",
+        "cotizacao": 1,
+        "valor_final": valor,
+        "cat": cat,
+        "banco": defaults.get("banco"),
+        "forma": defaults.get("forma"),
+        "factura": defaults.get("factura"),
+    }
+
+    bot.reply_to(
+        message,
+        (
+            "📝 *Novo gasto*\n\n"
+            f"Descricao: {desc}\n"
+            f"Valor: {formatar_guaranis(valor)} Gs\n"
+            f"Categoria: {cat}\n\n"
+            "Escolha o banco:"
+        ),
+        parse_mode="Markdown",
+        reply_markup=build_keyboard(BANK_OPTIONS, "expense:banco"),
+    )
+
+
+def salvar_gasto(chat_id):
+    expense = pending_expenses[chat_id]
+    fecha = datetime.now().strftime('%d/%m/%Y')
+    valor_final_format = formatar_guaranis(expense["valor_final"])
+
+    dados_linha = [
+        expense["desc"],
+        expense["valor"],
+        expense["moeda"],
+        expense["cotizacao"],
+        valor_final_format,
+        fecha,
+        expense["cat"],
+        expense["banco"],
+        expense["forma"],
+        expense["factura"],
+    ]
+    planilha.append_row(dados_linha)
+
+    user_defaults[chat_id] = {
+        "banco": expense["banco"],
+        "forma": expense["forma"],
+        "factura": expense["factura"],
+    }
+
+    print(f"\n--- NOVO GASTO ---")
+    print(f"Data: {fecha} | Cat: {expense['cat']}")
+    print(f"Valor Final: {valor_final_format}")
+
+    del pending_expenses[chat_id]
+
+    return (
+        "✅ *Gasto registrado!*\n\n"
+        f"📝 *Descrição:* {expense['desc']}\n"
+        f"🏷️ *Categoria:* {expense['cat']}\n"
+        f"💵 *Valor:* {valor_final_format} Gs\n"
+        f"📅 *Data:* {fecha}\n"
+        f"🏦 *Banco:* {expense['banco']}\n"
+        f"💳 *Forma:* {expense['forma']}\n"
+        f"🧾 *Factura:* {expense['factura']}"
+    )
+
+
+def processar_formato_legado(message, partes):
     #identificacao da data
     fecha = datetime.now().strftime('%d/%m/%Y')
-
     mensagem_resposta = ""
 
     # Se for guarani
@@ -118,12 +272,17 @@ def processar_gastos(message):
         forma = "".join(c for c in unicodedata.normalize('NFD', forma_bruta) if unicodedata.category(c) != 'Mn')
         factura = partes[4].upper()
 
-        valor_final_format = f"{valor_final:,.0f}".replace(',', '.')
+        valor_final_format = formatar_guaranis(valor_final)
 
-
-        dados_linha = [desc, valor, moeda, cotizacao, valor_final_format, 
+        dados_linha = [desc, valor, moeda, cotizacao, valor_final_format,
                         fecha, cat, banco, forma, factura]
         planilha.append_row(dados_linha)
+
+        user_defaults[message.chat.id] = {
+            "banco": banco,
+            "forma": forma,
+            "factura": factura,
+        }
 
         mensagem_resposta = f"""
         ✅ *Gasto registrado!*
@@ -151,11 +310,17 @@ def processar_gastos(message):
         forma = "".join(c for c in unicodedata.normalize('NFD', forma_bruta) if unicodedata.category(c) != 'Mn')
         factura = partes[6].upper()
 
-        valor_final_format = f"{valor_final:,.0f}".replace(',', '.')
+        valor_final_format = formatar_guaranis(valor_final)
 
-        dados_linha = [desc, valor, moeda, cotizacao, valor_final_format, 
+        dados_linha = [desc, valor, moeda, cotizacao, valor_final_format,
                         fecha, cat, banco, forma, factura]
         planilha.append_row(dados_linha)
+
+        user_defaults[message.chat.id] = {
+            "banco": banco,
+            "forma": forma,
+            "factura": factura,
+        }
 
         mensagem_resposta = f"""
         ✅ *Gasto registrado!*
@@ -174,17 +339,133 @@ def processar_gastos(message):
         bot.reply_to(message, "❌ Mensagem fora do padrão! Use 5 partes para Gs ou 7 para outras moedas.")
         print(f"\n--- ERRO ---")
         print(f"Mensagem fora do padrão! Use 5 partes para Gs ou 7 para outras moedas.")
-        print(f"Mensagem: {mensagem_bruta}")
+        print(f"Mensagem: {message.text}")
         return
 
     print(f"\n--- NOVO GASTO ---")
     print(f"Data: {fecha} | Cat: {cat}")
     print(f"Valor Final: {valor_final_format}")
-    
+
     bot.reply_to(message, mensagem_resposta, parse_mode="Markdown")
 
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("expense:"))
+def handle_expense_callbacks(call):
+    chat_id = call.message.chat.id
+    expense = pending_expenses.get(chat_id)
+
+    if call.data == "expense:cancel":
+        pending_expenses.pop(chat_id, None)
+        bot.answer_callback_query(call.id, "Lançamento cancelado.")
+        bot.edit_message_text(
+            "❌ Lançamento cancelado.",
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+        )
+        return
+
+    if not expense:
+        bot.answer_callback_query(call.id, "Nenhum gasto pendente.")
+        return
+
+    action = call.data.split(":", 2)
+    if len(action) < 2:
+        bot.answer_callback_query(call.id, "Ação inválida.")
+        return
+
+    if action[1] == "banco":
+        expense["banco"] = action[2]
+        bot.answer_callback_query(call.id, f"Banco: {action[2]}")
+        bot.edit_message_text(
+            (
+                "💳 *Escolha a forma de pagamento*\n\n"
+                f"Descricao: {expense['desc']}\n"
+                f"Valor: {formatar_guaranis(expense['valor_final'])} Gs\n"
+                f"Banco: {expense['banco']}"
+            ),
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            parse_mode="Markdown",
+            reply_markup=build_keyboard(PAYMENT_OPTIONS, "expense:forma"),
+        )
+        return
+
+    if action[1] == "forma":
+        expense["forma"] = action[2]
+        bot.answer_callback_query(call.id, f"Forma: {action[2]}")
+        bot.edit_message_text(
+            (
+                "🧾 *Tem factura?*\n\n"
+                f"Descricao: {expense['desc']}\n"
+                f"Valor: {formatar_guaranis(expense['valor_final'])} Gs\n"
+                f"Banco: {expense['banco']}\n"
+                f"Forma: {expense['forma']}"
+            ),
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            parse_mode="Markdown",
+            reply_markup=build_keyboard(INVOICE_OPTIONS, "expense:factura"),
+        )
+        return
+
+    if action[1] == "factura":
+        expense["factura"] = action[2]
+        bot.answer_callback_query(call.id, f"Factura: {action[2]}")
+        bot.edit_message_text(
+            montar_resumo_gasto(expense),
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            parse_mode="Markdown",
+            reply_markup=build_confirmation_keyboard(),
+        )
+        return
+
+    if action[1] == "confirm":
+        mensagem = salvar_gasto(chat_id)
+        bot.answer_callback_query(call.id, "Gasto salvo.")
+        bot.edit_message_text(
+            mensagem,
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            parse_mode="Markdown",
+        )
+        return
+
+    bot.answer_callback_query(call.id, "Ação não reconhecida.")
+
+# --- HANDLER 2: OUVINTE GERAL (FINANÇAS) ---
+@bot.message_handler(func=lambda message: True)
+def processar_gastos(message):
+    print(f"NOME DO CHAT: {message.chat.title} | ID: {message.chat.id}")
+    # mensagem original
+    mensagem_bruta = message.text
+
+    if not mensagem_bruta:
+        return
+
+    if ";" in mensagem_bruta:
+        partes = [" ".join(p.split()) for p in mensagem_bruta.split(';')]
+        processar_formato_legado(message, partes)
+        return
+
+    parsed = parse_expense_text(mensagem_bruta)
+    if not parsed:
+        bot.reply_to(
+            message,
+            (
+                "❌ Não entendi a mensagem.\n\n"
+                "Use o novo formato: `descricao valor`\n"
+                "Exemplos: `almuerzo polka 155000` ou `almuerzo polka 155k`\n\n"
+                "O formato antigo com `;` também continua funcionando."
+            ),
+            parse_mode="Markdown",
+        )
+        return
+
+    desc, valor = parsed
+    iniciar_fluxo_interativo(message, desc, valor)
+
 if __name__ == "__main__":
-    # Remove webhook anterior se existir (opcional, mas recomendado)
     try:
         bot.remove_webhook()
     except:
