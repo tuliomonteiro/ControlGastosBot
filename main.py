@@ -79,9 +79,14 @@ map = {
 BANK_OPTIONS = [
     ("CONTINENTAL", "Continental"),
     ("UENO", "Ueno"),
-    ("ITAU", "Itau"),
-    ("PERSONAL", "Personal"),
-    ("EFETIVO", "Efetivo"),
+    ("ATLAS", "Atlas"),
+    ("BASA", "Basa"),
+    ("MERU", "Meru"),
+    ("EFECTIVO", "Efectivo"),
+    ("NUBANK", "Nubank"),
+    ("C6", "C6"),
+    ("CORA", "Cora"),
+    ("RENDIMENTO", "Rendimento"), 
 ]
 
 PAYMENT_OPTIONS = [
