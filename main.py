@@ -94,6 +94,13 @@ INVOICE_OPTIONS = [
     ("NO", "No"),
 ]
 
+CURRENCY_OPTIONS = [
+    ("Gs", "Gs"),
+    ("USD", "USD"),
+    ("BRL", "BRL"),
+    ("ARS", "ARS"),
+]
+
 pending_expenses = {}
 user_defaults = {}
 
@@ -167,15 +174,61 @@ def build_confirmation_keyboard():
     return keyboard
 
 
+def build_exchange_rate_keyboard(currency, chat_id):
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    last_rates = user_defaults.get(chat_id, {}).get("exchange_rates", {})
+    last_rate = last_rates.get(currency)
+
+    if last_rate:
+        keyboard.add(
+            InlineKeyboardButton(
+                f"Usar ultima cotacao ({last_rate})",
+                callback_data=f"expense:rate:{last_rate}",
+            )
+        )
+
+    keyboard.add(InlineKeyboardButton("Trocar moeda", callback_data="expense:change_currency"))
+    keyboard.add(InlineKeyboardButton("Cancelar", callback_data="expense:cancel"))
+    return keyboard
+
+
 def montar_resumo_gasto(expense):
-    return (
+    resumo = (
         "🧾 *Confirme o gasto*\n\n"
         f"📝 *Descricao:* {expense['desc']}\n"
         f"🏷️ *Categoria:* {expense['cat']}\n"
-        f"💵 *Valor:* {formatar_guaranis(expense['valor_final'])} Gs\n"
+    )
+
+    if expense["moeda"] == "Gs":
+        resumo += f"💵 *Valor:* {formatar_guaranis(expense['valor_final'])} Gs\n"
+    else:
+        resumo += (
+            f"💰 *Origem:* {expense['moeda']} {expense['valor']}\n"
+            f"📈 *Cotacao:* {expense['cotizacao']}\n"
+            f"💵 *Final:* {formatar_guaranis(expense['valor_final'])} Gs\n"
+        )
+
+    resumo += (
         f"🏦 *Banco:* {expense['banco']}\n"
         f"💳 *Forma:* {expense['forma']}\n"
         f"🧾 *Factura:* {expense['factura']}"
+    )
+    return resumo
+
+
+def pedir_banco(chat_id, message_id):
+    expense = pending_expenses[chat_id]
+    bot.edit_message_text(
+        (
+            "🏦 *Escolha o banco*\n\n"
+            f"Descricao: {expense['desc']}\n"
+            f"Valor final: {formatar_guaranis(expense['valor_final'])} Gs\n"
+            f"Categoria: {expense['cat']}"
+        ),
+        chat_id=chat_id,
+        message_id=message_id,
+        parse_mode="Markdown",
+        reply_markup=build_keyboard(BANK_OPTIONS, "expense:banco"),
     )
 
 
@@ -187,13 +240,14 @@ def iniciar_fluxo_interativo(message, desc, valor):
     pending_expenses[chat_id] = {
         "desc": desc,
         "valor": valor,
-        "moeda": "Gs",
-        "cotizacao": 1,
-        "valor_final": valor,
+        "moeda": None,
+        "cotizacao": None,
+        "valor_final": None,
         "cat": cat,
         "banco": defaults.get("banco"),
         "forma": defaults.get("forma"),
         "factura": defaults.get("factura"),
+        "stage": "awaiting_currency",
     }
 
     bot.reply_to(
@@ -201,12 +255,12 @@ def iniciar_fluxo_interativo(message, desc, valor):
         (
             "📝 *Novo gasto*\n\n"
             f"Descricao: {desc}\n"
-            f"Valor: {formatar_guaranis(valor)} Gs\n"
             f"Categoria: {cat}\n\n"
-            "Escolha o banco:"
+            f"Valor informado: {valor}\n\n"
+            "Qual a moeda da compra?"
         ),
         parse_mode="Markdown",
-        reply_markup=build_keyboard(BANK_OPTIONS, "expense:banco"),
+        reply_markup=build_keyboard(CURRENCY_OPTIONS, "expense:currency"),
     )
 
 
@@ -214,6 +268,8 @@ def salvar_gasto(chat_id):
     expense = pending_expenses[chat_id]
     fecha = datetime.now().strftime('%d/%m/%Y')
     valor_final_format = formatar_guaranis(expense["valor_final"])
+    defaults = user_defaults.get(chat_id, {})
+    exchange_rates = defaults.get("exchange_rates", {})
 
     dados_linha = [
         expense["desc"],
@@ -229,10 +285,14 @@ def salvar_gasto(chat_id):
     ]
     planilha.append_row(dados_linha)
 
+    if expense["moeda"] != "Gs":
+        exchange_rates[expense["moeda"]] = expense["cotizacao"]
+
     user_defaults[chat_id] = {
         "banco": expense["banco"],
         "forma": expense["forma"],
         "factura": expense["factura"],
+        "exchange_rates": exchange_rates,
     }
 
     print(f"\n--- NOVO GASTO ---")
@@ -374,6 +434,7 @@ def handle_expense_callbacks(call):
         return
 
     if action[1] == "banco":
+        expense["stage"] = "awaiting_payment"
         expense["banco"] = action[2]
         bot.answer_callback_query(call.id, f"Banco: {action[2]}")
         bot.edit_message_text(
@@ -390,7 +451,63 @@ def handle_expense_callbacks(call):
         )
         return
 
+    if action[1] == "currency":
+        expense["moeda"] = action[2]
+        if expense["moeda"] == "Gs":
+            expense["cotizacao"] = 1
+            expense["valor_final"] = expense["valor"]
+            expense["stage"] = "awaiting_bank"
+            bot.answer_callback_query(call.id, "Moeda: Gs")
+            pedir_banco(chat_id, call.message.message_id)
+            return
+
+        expense["stage"] = "awaiting_exchange_rate"
+        bot.answer_callback_query(call.id, f"Moeda: {expense['moeda']}")
+        bot.edit_message_text(
+            (
+                "📈 *Informe a cotacao do dia*\n\n"
+                f"Descricao: {expense['desc']}\n"
+                f"Valor original: {expense['moeda']} {expense['valor']}\n\n"
+                "Envie apenas o numero da cotacao.\n"
+                "Exemplo: `1254`"
+            ),
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            parse_mode="Markdown",
+            reply_markup=build_exchange_rate_keyboard(expense["moeda"], chat_id),
+        )
+        return
+
+    if action[1] == "change_currency":
+        expense["stage"] = "awaiting_currency"
+        expense["moeda"] = None
+        expense["cotizacao"] = None
+        expense["valor_final"] = None
+        bot.answer_callback_query(call.id, "Escolha outra moeda.")
+        bot.edit_message_text(
+            (
+                "💱 *Qual a moeda da compra?*\n\n"
+                f"Descricao: {expense['desc']}\n"
+                f"Valor informado: {expense['valor']}"
+            ),
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            parse_mode="Markdown",
+            reply_markup=build_keyboard(CURRENCY_OPTIONS, "expense:currency"),
+        )
+        return
+
+    if action[1] == "rate":
+        cotizacao = int(action[2])
+        expense["cotizacao"] = cotizacao
+        expense["valor_final"] = expense["valor"] * cotizacao
+        expense["stage"] = "awaiting_bank"
+        bot.answer_callback_query(call.id, f"Cotacao: {cotizacao}")
+        pedir_banco(chat_id, call.message.message_id)
+        return
+
     if action[1] == "forma":
+        expense["stage"] = "awaiting_invoice"
         expense["forma"] = action[2]
         bot.answer_callback_query(call.id, f"Forma: {action[2]}")
         bot.edit_message_text(
@@ -409,6 +526,7 @@ def handle_expense_callbacks(call):
         return
 
     if action[1] == "factura":
+        expense["stage"] = "awaiting_confirmation"
         expense["factura"] = action[2]
         bot.answer_callback_query(call.id, f"Factura: {action[2]}")
         bot.edit_message_text(
@@ -441,6 +559,33 @@ def processar_gastos(message):
     mensagem_bruta = message.text
 
     if not mensagem_bruta:
+        return
+
+    pending = pending_expenses.get(message.chat.id)
+    if pending and pending.get("stage") == "awaiting_exchange_rate":
+        try:
+            cotizacao = int(parse_valor_brlike(mensagem_bruta))
+        except ValueError:
+            bot.reply_to(
+                message,
+                "❌ Cotação inválida. Envie apenas o número, por exemplo: `1254`",
+                parse_mode="Markdown",
+            )
+            return
+
+        pending["cotizacao"] = cotizacao
+        pending["valor_final"] = pending["valor"] * cotizacao
+        pending["stage"] = "awaiting_bank"
+        bot.reply_to(
+            message,
+            (
+                f"📈 *Cotacao registrada:* {cotizacao}\n"
+                f"💵 *Valor final:* {formatar_guaranis(pending['valor_final'])} Gs\n\n"
+                "Escolha o banco:"
+            ),
+            parse_mode="Markdown",
+            reply_markup=build_keyboard(BANK_OPTIONS, "expense:banco"),
+        )
         return
 
     if ";" in mensagem_bruta:
