@@ -53,7 +53,7 @@ except Exception as e:
 
 map = {
   'Mercado': ['MERCADO', 'FORTIS', 'SUPERSEIS', 'BOX', 'STOCK', 'LA MODERNA', 'SUPERMERCADO', 'LA HUERTA'],
-  'Alimentação': ['ALMOÇO', 'ALMUERZO', 'JANTA', 'JANTAR', 'CENA', 'DESAYUNO', 'CAFE', 'CAFETERIA', 'CAFE DA MANHA', 'LANCHE', 'SALGADO',
+  'Alimentação': ['ALMOÇO','ALMOCO' ,'ALMUERZO', 'JANTA', 'JANTAR', 'CENA', 'DESAYUNO', 'CAFE', 'CAFETERIA', 'CAFE DA MANHA', 'LANCHE', 'SALGADO',
                   'BUFFET', 'CANTINA', 'CANTINA - UCP', 'RESTAURANTE', 'PIZZARIA', 'PIZZA', 'HAMBURGUER', 'HAMBURGUESA', 'LOMITO', 'FAST FOOD',
                   'MCDONALDS', 'BURGER KING', 'MOSTAZA', 'SUSHI', 'SAKURA', 'ORIGAMI', 'BELINI', 'SAN TELMO', 'DON LUIS', 'CAPITAO BAR',
                   'ARENA', 'TERRAZA', 'PANADERIA', 'BOLERIA', 'CHIPERIA', 'HELADO', 'SORVETE', 'PICOLE', 'TORTA', 'BOLO',
@@ -73,7 +73,8 @@ map = {
   'Presentes': ['PRESENTE'],
   'Doações': ['DOACAO'],
   'Investimentos': ['BITCOIN'],
-  'Impostos': ['IMPOSTO', 'TAXA', 'SAQUE', 'IMPOSTOS']
+  'Taxas': ['TAXA', 'COMISSAO', 'TARIFA', 'TAXAS'],
+  'Impostos': ['IMPOSTO', 'SAQUE', 'IMPOSTOS']
 }
 
 BANK_OPTIONS = [
