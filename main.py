@@ -4,6 +4,9 @@ from dotenv import load_dotenv
 import unicodedata
 from datetime import datetime
 import re
+import json
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from flask import Flask, request
@@ -16,6 +19,7 @@ load_dotenv()
 TOKEN_BOT = os.getenv('TELEGRAM_TOKEN')
 SHEET_KEY = os.getenv('SHEET_KEY')
 WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://controlgastosbot.onrender.com')
+EXCHANGE_RATE_API_URL = os.getenv("EXCHANGE_RATE_API_URL", "https://api.frankfurter.dev/v1/latest")
 
 # cria uma instancia do bot
 bot = telebot.TeleBot(TOKEN_BOT)
@@ -198,6 +202,30 @@ def build_exchange_rate_keyboard(currency, chat_id):
     return keyboard
 
 
+def buscar_cotacao_guarani(currency):
+    if currency == "Gs":
+        return 1, None
+
+    url = f"{EXCHANGE_RATE_API_URL}?base={currency}&symbols=PYG"
+
+    try:
+        with urlopen(url, timeout=5) as response:
+            payload = json.load(response)
+    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
+        raise RuntimeError(f"Falha ao consultar cotacao para {currency}: {exc}") from exc
+
+    rates = payload.get("rates", {})
+    rate = rates.get("PYG")
+    if rate is None:
+        raise RuntimeError(f"Resposta sem taxa PYG para {currency}.")
+
+    cotizacao = int(round(float(rate)))
+    if cotizacao <= 0:
+        raise RuntimeError(f"Cotacao invalida recebida para {currency}: {rate}")
+
+    return cotizacao, payload.get("date")
+
+
 def montar_resumo_gasto(expense):
     resumo = (
         "🧾 *Confirme o gasto*\n\n"
@@ -235,6 +263,26 @@ def pedir_banco(chat_id, message_id):
         message_id=message_id,
         parse_mode="Markdown",
         reply_markup=build_keyboard(BANK_OPTIONS, "expense:banco"),
+    )
+
+
+def pedir_cotacao_manual(chat_id, message_id):
+    expense = pending_expenses[chat_id]
+    bot.edit_message_text(
+        (
+            "📈 *Informe a cotacao do dia*\n\n"
+            f"Descricao: {expense['desc']}\n"
+            f"Valor original: {expense['moeda']} {expense['valor']}\n\n"
+            "Tentei buscar a cotacao automaticamente, mas voce ainda pode:\n"
+            "- enviar a cotacao manualmente\n"
+            "- usar a ultima cotacao salva\n\n"
+            "Envie apenas o numero da cotacao.\n"
+            "Exemplo: `1254`"
+        ),
+        chat_id=chat_id,
+        message_id=message_id,
+        parse_mode="Markdown",
+        reply_markup=build_exchange_rate_keyboard(expense["moeda"], chat_id),
     )
 
 
@@ -469,18 +517,30 @@ def handle_expense_callbacks(call):
 
         expense["stage"] = "awaiting_exchange_rate"
         bot.answer_callback_query(call.id, f"Moeda: {expense['moeda']}")
+        try:
+            cotizacao, data_cotacao = buscar_cotacao_guarani(expense["moeda"])
+        except RuntimeError as exc:
+            print(f"⚠️ {exc}")
+            pedir_cotacao_manual(chat_id, call.message.message_id)
+            return
+
+        expense["cotizacao"] = cotizacao
+        expense["valor_final"] = expense["valor"] * cotizacao
+        expense["stage"] = "awaiting_bank"
+        data_msg = f"\n📅 *Data da API:* {data_cotacao}" if data_cotacao else ""
         bot.edit_message_text(
             (
-                "📈 *Informe a cotacao do dia*\n\n"
+                "🤖 *Cotacao obtida automaticamente*\n\n"
                 f"Descricao: {expense['desc']}\n"
-                f"Valor original: {expense['moeda']} {expense['valor']}\n\n"
-                "Envie apenas o numero da cotacao.\n"
-                "Exemplo: `1254`"
+                f"Valor original: {expense['moeda']} {expense['valor']}\n"
+                f"📈 *Cotacao usada:* {cotizacao}{data_msg}\n"
+                f"💵 *Valor final:* {formatar_guaranis(expense['valor_final'])} Gs\n\n"
+                "Escolha o banco:"
             ),
             chat_id=chat_id,
             message_id=call.message.message_id,
             parse_mode="Markdown",
-            reply_markup=build_exchange_rate_keyboard(expense["moeda"], chat_id),
+            reply_markup=build_keyboard(BANK_OPTIONS, "expense:banco"),
         )
         return
 

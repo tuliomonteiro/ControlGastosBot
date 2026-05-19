@@ -10,7 +10,8 @@ Telegram bot for logging personal expenses into Google Sheets, with a companion 
 - Writes expense rows into a Google Sheet
 - Supports a guided Telegram flow with inline buttons for:
   - currency
-  - exchange rate for foreign currencies
+  - automatic exchange rate lookup for foreign currencies
+  - manual exchange rate fallback when lookup fails
   - bank
   - payment method
   - invoice (`Si` / `No`)
@@ -53,13 +54,14 @@ Dinner  155k
 Then the bot will guide you through:
 
 1. Currency selection
-2. Exchange rate entry if the currency is not `Gs`
-3. Bank selection
-4. Payment method selection
-5. Invoice confirmation
-6. Final save confirmation
+2. Automatic exchange rate lookup if the currency is not `Gs`
+3. Manual exchange rate entry only if the lookup fails
+4. Bank selection
+5. Payment method selection
+6. Invoice confirmation
+7. Final save confirmation
 
-If you log another expense in the same foreign currency, the bot can reuse the last exchange rate with a button tap.
+Foreign currency rates are fetched from Frankfurter (`https://api.frankfurter.dev/v1/latest`) with `PYG` as target. If the API is unavailable, the bot falls back to the current flow, where you can type the exchange rate manually or reuse the last saved rate with a button tap.
 
 ### Legacy flow
 
@@ -99,6 +101,7 @@ The Python bot expects:
 - `TELEGRAM_TOKEN`: Telegram bot token
 - `SHEET_KEY`: Google Sheets document ID
 - `WEBHOOK_URL`: public base URL for the deployed bot
+- `EXCHANGE_RATE_API_URL`: optional override for the exchange rate endpoint
 
 Example:
 
@@ -106,6 +109,7 @@ Example:
 TELEGRAM_TOKEN=your-telegram-bot-token
 SHEET_KEY=your-google-sheet-id
 WEBHOOK_URL=https://your-render-service.onrender.com
+EXCHANGE_RATE_API_URL=https://api.frankfurter.dev/v1/latest
 ```
 
 ## Local Secret Files
@@ -160,5 +164,4 @@ Before using it in Google Apps Script:
 4. Create time-based triggers for:
    - `enviarRelatorioSemanal`
    - `enviarRelatorioMensal`
-
 
