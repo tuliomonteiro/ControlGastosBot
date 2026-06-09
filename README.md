@@ -8,6 +8,7 @@ Telegram bot for logging personal expenses into Google Sheets, with a companion 
 - Receives Telegram messages through a webhook hosted on Render
 - Parses expense entries and categorizes them automatically
 - Writes expense rows into a Google Sheet
+- Accepts expense messages as `descricao valor` or `descricao valor data`
 - Supports a guided Telegram flow with inline buttons for:
   - currency
   - automatic exchange rate lookup for foreign currencies
@@ -78,6 +79,11 @@ For foreign currencies:
 ```
 
 ## Spreadsheet Format
+
+New message format examples:
+
+- `mcdonalds 54000`
+- `mcdonalds 54000 09/06/26`
 
 The bot writes rows in this order:
 
@@ -164,4 +170,3 @@ Before using it in Google Apps Script:
 4. Create time-based triggers for:
    - `enviarRelatorioSemanal`
    - `enviarRelatorioMensal`
-

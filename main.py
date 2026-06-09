@@ -152,15 +152,40 @@ def parse_valor_brlike(valor_texto):
     return valor
 
 
+def formatar_data_atual():
+    return datetime.now().strftime('%d/%m/%Y')
+
+
+def parse_data_texto(data_texto):
+    data_limpa = data_texto.strip()
+    for formato in ("%d/%m/%Y", "%d/%m/%y"):
+        try:
+            return datetime.strptime(data_limpa, formato).strftime("%d/%m/%Y")
+        except ValueError:
+            continue
+    raise ValueError("Data inválida")
+
+
 def parse_expense_text(mensagem):
     texto = " ".join(mensagem.split())
-    match = re.match(r"^(?P<desc>.+?)\s+(?P<valor>\d[\d\.,]*(?:\s*(?:k|mil))?)$", texto, re.IGNORECASE)
+    match = re.match(
+        r"^(?P<desc>.+?)\s+(?P<valor>\d[\d\.,]*(?:\s*(?:k|mil))?)(?:\s+(?P<fecha>\d{1,2}/\d{1,2}/(?:\d{2}|\d{4})))?$",
+        texto,
+        re.IGNORECASE,
+    )
     if not match:
         return None
 
     desc = match.group("desc").strip().upper()
     valor = parse_valor_brlike(match.group("valor"))
-    return desc, valor
+    fecha_texto = match.group("fecha")
+
+    try:
+        fecha = parse_data_texto(fecha_texto) if fecha_texto else formatar_data_atual()
+    except ValueError:
+        return None
+
+    return desc, valor, fecha
 
 
 def formatar_guaranis(valor):
@@ -243,6 +268,7 @@ def montar_resumo_gasto(expense):
         )
 
     resumo += (
+        f"📅 *Data:* {expense['fecha']}\n"
         f"🏦 *Banco:* {expense['banco']}\n"
         f"💳 *Forma:* {expense['forma']}\n"
         f"🧾 *Factura:* {expense['factura']}"
@@ -286,7 +312,7 @@ def pedir_cotacao_manual(chat_id, message_id):
     )
 
 
-def iniciar_fluxo_interativo(message, desc, valor):
+def iniciar_fluxo_interativo(message, desc, valor, fecha):
     chat_id = message.chat.id
     defaults = user_defaults.get(chat_id, {})
     cat = identificar_categoria(desc, map).upper()
@@ -294,6 +320,7 @@ def iniciar_fluxo_interativo(message, desc, valor):
     pending_expenses[chat_id] = {
         "desc": desc,
         "valor": valor,
+        "fecha": fecha,
         "moeda": None,
         "cotizacao": None,
         "valor_final": None,
@@ -310,6 +337,7 @@ def iniciar_fluxo_interativo(message, desc, valor):
             "📝 *Novo gasto*\n\n"
             f"Descricao: {desc}\n"
             f"Categoria: {cat}\n\n"
+            f"Data: {fecha}\n"
             f"Valor informado: {valor}\n\n"
             "Qual a moeda da compra?"
         ),
@@ -320,7 +348,7 @@ def iniciar_fluxo_interativo(message, desc, valor):
 
 def salvar_gasto(chat_id):
     expense = pending_expenses[chat_id]
-    fecha = datetime.now().strftime('%d/%m/%Y')
+    fecha = expense["fecha"]
     valor_final_format = formatar_guaranis(expense["valor_final"])
     defaults = user_defaults.get(chat_id, {})
     exchange_rates = defaults.get("exchange_rates", {})
@@ -369,7 +397,7 @@ def salvar_gasto(chat_id):
 
 def processar_formato_legado(message, partes):
     #identificacao da data
-    fecha = datetime.now().strftime('%d/%m/%Y')
+    fecha = formatar_data_atual()
     mensagem_resposta = ""
 
     # Se for guarani
@@ -665,16 +693,16 @@ def processar_gastos(message):
             message,
             (
                 "❌ Não entendi a mensagem.\n\n"
-                "Use o novo formato: `descricao valor`\n"
-                "Exemplos: `almuerzo polka 155000` ou `almuerzo polka 155k`\n\n"
+                "Use o novo formato: `descricao valor` ou `descricao valor data`\n"
+                "Exemplos: `almuerzo polka 155000`, `almuerzo polka 155k` ou `mcdonalds 54000 09/06/26`\n\n"
                 "O formato antigo com `;` também continua funcionando."
             ),
             parse_mode="Markdown",
         )
         return
 
-    desc, valor = parsed
-    iniciar_fluxo_interativo(message, desc, valor)
+    desc, valor, fecha = parsed
+    iniciar_fluxo_interativo(message, desc, valor, fecha)
 
 if __name__ == "__main__":
     try:
