@@ -1,4 +1,5 @@
 import Link from "next/link";
+import LogoutButton from "./LogoutButton";
 
 export default function Navbar() {
   return (
@@ -19,6 +20,7 @@ export default function Navbar() {
         >
           Historico
         </Link>
+        <LogoutButton />
       </div>
     </nav>
   );
