@@ -53,8 +53,21 @@ def webhook():
 planilha_doc = None
 planilha = None
 
-def get_current_sheet_name():
-    return str(datetime.now().year)
+def find_year_worksheet(doc):
+    """Returns the worksheet whose title matches or contains the current year.
+    Handles both 'Control de Gastos - 2026' and plain '2026' tab names."""
+    year = str(datetime.now().year)
+    worksheets = doc.worksheets()
+    # Prefer exact match
+    for ws in worksheets:
+        if ws.title == year:
+            return ws
+    # Fall back to any tab containing the year string
+    for ws in worksheets:
+        if year in ws.title:
+            return ws
+    available = [ws.title for ws in worksheets]
+    raise ValueError(f"Nenhuma aba encontrada para o ano {year}. Disponíveis: {available}")
 
 def connect_sheets():
     global planilha_doc, planilha
@@ -63,8 +76,8 @@ def connect_sheets():
         creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
         client = gspread.authorize(creds)
         planilha_doc = client.open_by_key(SHEET_KEY)
-        planilha = planilha_doc.worksheet(get_current_sheet_name())
-        logger.info("Conexão com Google Sheets estabelecida (aba: %s)", get_current_sheet_name())
+        planilha = find_year_worksheet(planilha_doc)
+        logger.info("Conexão com Google Sheets estabelecida (aba: %s)", planilha.title)
     except Exception as e:
         logger.error("Erro na conexão com Google Sheets: %s", e)
 
