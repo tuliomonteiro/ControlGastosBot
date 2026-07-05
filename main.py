@@ -32,6 +32,7 @@ EXCHANGE_RATE_API_URL = os.getenv("EXCHANGE_RATE_API_URL", "https://api.frankfur
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET')
 MAX_VOICE_DURATION = int(os.getenv("MAX_VOICE_DURATION", "120"))  # seconds
+EXCHANGE_RATE_SPREAD = float(os.getenv("EXCHANGE_RATE_SPREAD", "1.01"))  # 1% card spread
 ALLOWED_CHAT_IDS: set[int] = set(
     int(x) for x in os.getenv("ALLOWED_CHAT_IDS", "").split(",") if x.strip()
 )
@@ -301,7 +302,7 @@ def buscar_cotacao_guarani(currency):
     if rate is None:
         raise RuntimeError(f"Resposta sem taxa PYG para {currency}.")
 
-    cotizacao = int(round(float(rate)))
+    cotizacao = int(round(float(rate) * EXCHANGE_RATE_SPREAD))
     if cotizacao <= 0:
         raise RuntimeError(f"Cotacao invalida recebida para {currency}: {rate}")
 
@@ -367,6 +368,83 @@ def pedir_cotacao_manual(chat_id, message_id):
         parse_mode="Markdown",
         reply_markup=build_exchange_rate_keyboard(expense["moeda"], chat_id),
     )
+
+
+def pedir_forma(chat_id, message_id):
+    expense = pending_expenses[chat_id]
+    bot.edit_message_text(
+        (
+            "💳 *Escolha a forma de pagamento*\n\n"
+            f"Descricao: {expense['desc']}\n"
+            f"Valor: {formatar_guaranis(expense['valor_final'])} Gs\n"
+            f"Banco: {expense['banco']}"
+        ),
+        chat_id=chat_id,
+        message_id=message_id,
+        parse_mode="Markdown",
+        reply_markup=build_keyboard(PAYMENT_OPTIONS, "expense:forma"),
+    )
+
+
+def pedir_factura(chat_id, message_id):
+    expense = pending_expenses[chat_id]
+    bot.edit_message_text(
+        (
+            "🧾 *Tem factura?*\n\n"
+            f"Descricao: {expense['desc']}\n"
+            f"Valor: {formatar_guaranis(expense['valor_final'])} Gs\n"
+            f"Banco: {expense['banco']}\n"
+            f"Forma: {expense['forma']}"
+        ),
+        chat_id=chat_id,
+        message_id=message_id,
+        parse_mode="Markdown",
+        reply_markup=build_keyboard(INVOICE_OPTIONS, "expense:factura"),
+    )
+
+
+def build_voice_save_keyboard():
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("✅ Salvar", callback_data="voice:save_all"),
+        InlineKeyboardButton("🔄 Corrigir", callback_data="voice:retry"),
+    )
+    keyboard.add(InlineKeyboardButton("❌ Cancelar", callback_data="expense:cancel"))
+    return keyboard
+
+
+def continuar_apos_voz(chat_id, message_id):
+    """Resume from the first missing field after voice confirmation."""
+    expense = pending_expenses[chat_id]
+
+    if expense.get("cotizacao") is None and expense["moeda"] != "Gs":
+        try:
+            cotizacao, _ = buscar_cotacao_guarani(expense["moeda"])
+            expense["cotizacao"] = cotizacao
+            expense["valor_final"] = expense["valor"] * cotizacao
+        except RuntimeError:
+            expense["stage"] = "awaiting_exchange_rate"
+            pedir_cotacao_manual(chat_id, message_id)
+            return
+
+    if expense.get("banco") is None:
+        expense["stage"] = "awaiting_bank"
+        pedir_banco(chat_id, message_id)
+    elif expense.get("forma") is None:
+        expense["stage"] = "awaiting_payment"
+        pedir_forma(chat_id, message_id)
+    elif expense.get("factura") is None:
+        expense["stage"] = "awaiting_invoice"
+        pedir_factura(chat_id, message_id)
+    else:
+        expense["stage"] = "awaiting_confirmation"
+        bot.edit_message_text(
+            montar_resumo_gasto(expense),
+            chat_id=chat_id,
+            message_id=message_id,
+            parse_mode="Markdown",
+            reply_markup=build_confirmation_keyboard(),
+        )
 
 
 def iniciar_fluxo_interativo(message, desc, valor, fecha):
@@ -553,15 +631,27 @@ def transcrever_audio(file_content: bytes) -> str:
 
 def extrair_gasto_do_texto(transcript: str) -> dict:
     hoje = formatar_data_atual()
+    bancos = ", ".join(VALID_BANKS)
     prompt = (
-        f'Você é um assistente de controle de gastos. Extraia as informações do gasto a partir do texto abaixo.\n\n'
+        f'Extraia as informações do gasto deste texto em português brasileiro.\n\n'
         f'Texto: "{transcript}"\n\n'
         f'Data de hoje: {hoje}\n\n'
         'Retorne um JSON com os campos:\n'
         '- "desc": descrição em MAIÚSCULAS (string)\n'
         '- "valor": valor numérico sem formatação (number)\n'
-        '- "moeda": "Gs", "USD", "BRL" ou "ARS" (padrão "Gs" se não mencionado)\n'
+        '- "moeda": exatamente "Gs", "USD", "BRL" ou "ARS" (padrão "Gs" se não mencionado)\n'
+        f'- "banco": um dos valores exatos [{bancos}] ou null se não mencionado\n'
+        '- "forma": exatamente "CREDITO" ou "DEBITO" ou null se não mencionado\n'
+        '- "factura": exatamente "SI" ou "NO" ou null se não mencionado\n'
         f'- "fecha": data no formato DD/MM/AAAA (use {hoje} se não mencionada)\n\n'
+        'Regras de normalização:\n'
+        '"crédito"/"no crédito"/"credit" → "CREDITO"\n'
+        '"débito"/"no débito" → "DEBITO"\n'
+        '"com factura"/"com nota"/"com fatura" → "SI"\n'
+        '"sem factura"/"sem nota"/"sem fatura" → "NO"\n'
+        '"guaranis"/"guaranies"/"Gs" → moeda "Gs"\n'
+        '"reais"/"real"/"BRL" → moeda "BRL"\n'
+        '"dólares"/"dolares"/"USD" → moeda "USD"\n'
         'Responda APENAS com o JSON.'
     )
     response = openai_client.chat.completions.create(
@@ -616,10 +706,18 @@ def handle_voice(message):
         valor = float(gasto.get("valor", 0))
         moeda = str(gasto.get("moeda", "Gs"))
         fecha = str(gasto.get("fecha", formatar_data_atual()))
+        banco = str(gasto.get("banco") or "").upper().strip() or None
+        forma = str(gasto.get("forma") or "").upper().strip() or None
+        factura = str(gasto.get("factura") or "").upper().strip() or None
 
-        valid_currencies = [c[0] for c in CURRENCY_OPTIONS]
-        if moeda not in valid_currencies:
+        if moeda not in VALID_CURRENCIES:
             moeda = "Gs"
+        if banco not in VALID_BANKS:
+            banco = None
+        if forma not in VALID_PAYMENTS:
+            forma = None
+        if factura not in VALID_INVOICES:
+            factura = None
 
         if not desc or valor <= 0:
             bot.edit_message_text(
@@ -630,39 +728,89 @@ def handle_voice(message):
             return
 
         cat = identificar_categoria(desc, map).upper()
-        defaults = user_defaults.get(chat_id, {})
 
-        pending_expenses[chat_id] = {
+        # Resolve exchange rate immediately (with spread)
+        cotizacao = None
+        valor_final = None
+        rate_note = ""
+        if moeda == "Gs":
+            cotizacao = 1
+            valor_final = valor
+        else:
+            try:
+                cotizacao, rate_date = buscar_cotacao_guarani(moeda)
+                valor_final = valor * cotizacao
+                rate_note = f" (+1% spread, ref. {rate_date})" if rate_date else " (+1% spread)"
+            except RuntimeError:
+                pass  # will ask for rate later in the flow
+
+        expense = {
             "desc": desc,
             "valor": valor,
             "fecha": fecha,
             "moeda": moeda,
-            "cotizacao": None,
-            "valor_final": None,
+            "cotizacao": cotizacao,
+            "valor_final": valor_final,
             "cat": cat,
-            "banco": defaults.get("banco"),
-            "forma": defaults.get("forma"),
-            "factura": defaults.get("factura"),
+            "banco": banco,
+            "forma": forma,
+            "factura": factura,
             "stage": "voice_preview",
         }
+        pending_expenses[chat_id] = expense
 
-        valor_display = f"{formatar_guaranis(valor)} Gs" if moeda == "Gs" else f"{moeda} {valor}"
+        all_complete = all([banco, forma, factura, valor_final is not None])
 
-        bot.edit_message_text(
-            (
+        if moeda == "Gs":
+            valor_display = f"{formatar_guaranis(valor)} Gs"
+        elif valor_final is not None:
+            valor_display = f"{moeda} {valor} → {formatar_guaranis(valor_final)} Gs{rate_note}"
+        else:
+            valor_display = f"{moeda} {valor} (cotação pendente)"
+
+        if all_complete:
+            expense["stage"] = "voice_full_preview"
+            resumo = (
+                "🎤 *Confirme o gasto:*\n\n"
+                f"🗣️ _{transcript}_\n\n"
+                f"📝 *Descrição:* {desc}\n"
+                f"🏷️ *Categoria:* {cat}\n"
+                f"💵 *Valor:* {valor_display}\n"
+                f"📅 *Data:* {fecha}\n"
+                f"🏦 *Banco:* {banco}\n"
+                f"💳 *Forma:* {forma}\n"
+                f"🧾 *Factura:* {factura}"
+            )
+            bot.edit_message_text(
+                resumo,
+                chat_id=chat_id,
+                message_id=processing_msg.message_id,
+                parse_mode="Markdown",
+                reply_markup=build_voice_save_keyboard(),
+            )
+        else:
+            resumo = (
                 "🎤 *Eu entendi:*\n\n"
                 f"🗣️ _{transcript}_\n\n"
                 f"📝 *Descrição:* {desc}\n"
                 f"🏷️ *Categoria:* {cat}\n"
                 f"💵 *Valor:* {valor_display}\n"
-                f"📅 *Data:* {fecha}\n\n"
-                "Está correto?"
-            ),
-            chat_id=chat_id,
-            message_id=processing_msg.message_id,
-            parse_mode="Markdown",
-            reply_markup=build_voice_confirmation_keyboard(),
-        )
+                f"📅 *Data:* {fecha}\n"
+            )
+            if banco:
+                resumo += f"🏦 *Banco:* {banco}\n"
+            if forma:
+                resumo += f"💳 *Forma:* {forma}\n"
+            if factura:
+                resumo += f"🧾 *Factura:* {factura}\n"
+            resumo += "\nConfirmar e preencher campos restantes?"
+            bot.edit_message_text(
+                resumo,
+                chat_id=chat_id,
+                message_id=processing_msg.message_id,
+                parse_mode="Markdown",
+                reply_markup=build_voice_confirmation_keyboard(),
+            )
 
     except Exception as e:
         logger.exception("Erro no reconhecimento de voz")
@@ -692,45 +840,28 @@ def handle_voice_callbacks(call):
         )
         return
 
+    if action == "save_all":
+        expense = pending_expenses.get(chat_id)
+        if not expense:
+            bot.answer_callback_query(call.id, "Nenhum gasto pendente.")
+            return
+        bot.answer_callback_query(call.id, "Salvando...")
+        mensagem = salvar_gasto(chat_id)
+        bot.edit_message_text(
+            mensagem,
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            parse_mode="Markdown",
+        )
+        return
+
     if action == "confirm":
         expense = pending_expenses.get(chat_id)
         if not expense:
             bot.answer_callback_query(call.id, "Nenhum gasto pendente.")
             return
-
-        moeda = expense["moeda"]
         bot.answer_callback_query(call.id, "Confirmado!")
-
-        if moeda == "Gs":
-            expense["cotizacao"] = 1
-            expense["valor_final"] = expense["valor"]
-            expense["stage"] = "awaiting_bank"
-            pedir_banco(chat_id, call.message.message_id)
-        else:
-            try:
-                cotizacao, data_cotacao = buscar_cotacao_guarani(moeda)
-                expense["cotizacao"] = cotizacao
-                expense["valor_final"] = expense["valor"] * cotizacao
-                expense["stage"] = "awaiting_bank"
-                data_msg = f"\n📅 *Data da API:* {data_cotacao}" if data_cotacao else ""
-                bot.edit_message_text(
-                    (
-                        "🤖 *Cotacao obtida automaticamente*\n\n"
-                        f"Descricao: {expense['desc']}\n"
-                        f"Valor original: {moeda} {expense['valor']}\n"
-                        f"📈 *Cotacao usada:* {cotizacao}{data_msg}\n"
-                        f"💵 *Valor final:* {formatar_guaranis(expense['valor_final'])} Gs\n\n"
-                        "Escolha o banco:"
-                    ),
-                    chat_id=chat_id,
-                    message_id=call.message.message_id,
-                    parse_mode="Markdown",
-                    reply_markup=build_keyboard(BANK_OPTIONS, "expense:banco"),
-                )
-            except RuntimeError as exc:
-                logger.warning("Falha ao buscar cotação automática (voz): %s", exc)
-                expense["stage"] = "awaiting_exchange_rate"
-                pedir_cotacao_manual(chat_id, call.message.message_id)
+        continuar_apos_voz(chat_id, call.message.message_id)
         return
 
     bot.answer_callback_query(call.id, "Ação não reconhecida.")
