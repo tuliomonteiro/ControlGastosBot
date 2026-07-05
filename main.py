@@ -1,4 +1,5 @@
 import os
+import io
 import logging
 import telebot
 from dotenv import load_dotenv
@@ -10,6 +11,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+from openai import OpenAI as OpenAIClient
 from flask import Flask, request
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -28,9 +30,12 @@ TOKEN_BOT = os.getenv('TELEGRAM_TOKEN')
 SHEET_KEY = os.getenv('SHEET_KEY')
 WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://controlgastosbot.onrender.com')
 EXCHANGE_RATE_API_URL = os.getenv("EXCHANGE_RATE_API_URL", "https://api.frankfurter.dev/v1/latest")
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 
 # cria uma instancia do bot
 bot = telebot.TeleBot(TOKEN_BOT)
+
+openai_client = OpenAIClient(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # Cria uma instância do Flask para receber webhooks do Telegram
 app = Flask(__name__)
@@ -511,6 +516,188 @@ def processar_formato_legado(message, partes):
     logger.info("Gasto salvo (legado) | Data: %s | Cat: %s | Valor: %s Gs", fecha, cat, valor_final_format)
 
     bot.reply_to(message, mensagem_resposta, parse_mode="Markdown")
+
+
+def transcrever_audio(file_content: bytes) -> str:
+    audio_file = io.BytesIO(file_content)
+    audio_file.name = "audio.ogg"
+    transcript = openai_client.audio.transcriptions.create(
+        model="whisper-1",
+        file=audio_file,
+        language="pt",
+    )
+    return transcript.text
+
+
+def extrair_gasto_do_texto(transcript: str) -> dict:
+    hoje = formatar_data_atual()
+    prompt = (
+        f'Você é um assistente de controle de gastos. Extraia as informações do gasto a partir do texto abaixo.\n\n'
+        f'Texto: "{transcript}"\n\n'
+        f'Data de hoje: {hoje}\n\n'
+        'Retorne um JSON com os campos:\n'
+        '- "desc": descrição em MAIÚSCULAS (string)\n'
+        '- "valor": valor numérico sem formatação (number)\n'
+        '- "moeda": "Gs", "USD", "BRL" ou "ARS" (padrão "Gs" se não mencionado)\n'
+        f'- "fecha": data no formato DD/MM/AAAA (use {hoje} se não mencionada)\n\n'
+        'Responda APENAS com o JSON.'
+    )
+    response = openai_client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+        temperature=0,
+    )
+    return json.loads(response.choices[0].message.content)
+
+
+def build_voice_confirmation_keyboard():
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("✅ Confirmar", callback_data="voice:confirm"),
+        InlineKeyboardButton("🔄 Tentar de novo", callback_data="voice:retry"),
+    )
+    keyboard.add(InlineKeyboardButton("❌ Cancelar", callback_data="expense:cancel"))
+    return keyboard
+
+
+@bot.message_handler(content_types=['voice'])
+def handle_voice(message):
+    chat_id = message.chat.id
+
+    if not openai_client:
+        bot.reply_to(message, "❌ Reconhecimento de voz não configurado. Defina OPENAI_API_KEY.")
+        return
+
+    processing_msg = bot.reply_to(message, "🎤 Processando áudio...")
+
+    try:
+        file_info = bot.get_file(message.voice.file_id)
+        file_content = bot.download_file(file_info.file_path)
+
+        transcript = transcrever_audio(file_content)
+        logger.info("Transcrição de voz | Chat: %s | Texto: %s", chat_id, transcript)
+
+        gasto = extrair_gasto_do_texto(transcript)
+
+        desc = str(gasto.get("desc", "")).upper().strip()
+        valor = float(gasto.get("valor", 0))
+        moeda = str(gasto.get("moeda", "Gs"))
+        fecha = str(gasto.get("fecha", formatar_data_atual()))
+
+        valid_currencies = [c[0] for c in CURRENCY_OPTIONS]
+        if moeda not in valid_currencies:
+            moeda = "Gs"
+
+        if not desc or valor <= 0:
+            bot.edit_message_text(
+                "❌ Não consegui identificar o gasto. Tente novamente ou use o formato de texto.",
+                chat_id=chat_id,
+                message_id=processing_msg.message_id,
+            )
+            return
+
+        cat = identificar_categoria(desc, map).upper()
+        defaults = user_defaults.get(chat_id, {})
+
+        pending_expenses[chat_id] = {
+            "desc": desc,
+            "valor": valor,
+            "fecha": fecha,
+            "moeda": moeda,
+            "cotizacao": None,
+            "valor_final": None,
+            "cat": cat,
+            "banco": defaults.get("banco"),
+            "forma": defaults.get("forma"),
+            "factura": defaults.get("factura"),
+            "stage": "voice_preview",
+        }
+
+        valor_display = f"{formatar_guaranis(valor)} Gs" if moeda == "Gs" else f"{moeda} {valor}"
+
+        bot.edit_message_text(
+            (
+                "🎤 *Eu entendi:*\n\n"
+                f"🗣️ _{transcript}_\n\n"
+                f"📝 *Descrição:* {desc}\n"
+                f"🏷️ *Categoria:* {cat}\n"
+                f"💵 *Valor:* {valor_display}\n"
+                f"📅 *Data:* {fecha}\n\n"
+                "Está correto?"
+            ),
+            chat_id=chat_id,
+            message_id=processing_msg.message_id,
+            parse_mode="Markdown",
+            reply_markup=build_voice_confirmation_keyboard(),
+        )
+
+    except Exception as e:
+        logger.error("Erro no reconhecimento de voz: %s", e)
+        bot.edit_message_text(
+            "❌ Erro ao processar o áudio. Tente novamente.",
+            chat_id=chat_id,
+            message_id=processing_msg.message_id,
+        )
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("voice:"))
+def handle_voice_callbacks(call):
+    chat_id = call.message.chat.id
+    action = call.data.split(":", 1)[1]
+
+    if action == "retry":
+        pending_expenses.pop(chat_id, None)
+        bot.answer_callback_query(call.id, "Envie o áudio novamente.")
+        bot.edit_message_text(
+            "🎤 Por favor, envie o áudio novamente.",
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+        )
+        return
+
+    if action == "confirm":
+        expense = pending_expenses.get(chat_id)
+        if not expense:
+            bot.answer_callback_query(call.id, "Nenhum gasto pendente.")
+            return
+
+        moeda = expense["moeda"]
+        bot.answer_callback_query(call.id, "Confirmado!")
+
+        if moeda == "Gs":
+            expense["cotizacao"] = 1
+            expense["valor_final"] = expense["valor"]
+            expense["stage"] = "awaiting_bank"
+            pedir_banco(chat_id, call.message.message_id)
+        else:
+            try:
+                cotizacao, data_cotacao = buscar_cotacao_guarani(moeda)
+                expense["cotizacao"] = cotizacao
+                expense["valor_final"] = expense["valor"] * cotizacao
+                expense["stage"] = "awaiting_bank"
+                data_msg = f"\n📅 *Data da API:* {data_cotacao}" if data_cotacao else ""
+                bot.edit_message_text(
+                    (
+                        "🤖 *Cotacao obtida automaticamente*\n\n"
+                        f"Descricao: {expense['desc']}\n"
+                        f"Valor original: {moeda} {expense['valor']}\n"
+                        f"📈 *Cotacao usada:* {cotizacao}{data_msg}\n"
+                        f"💵 *Valor final:* {formatar_guaranis(expense['valor_final'])} Gs\n\n"
+                        "Escolha o banco:"
+                    ),
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
+                    parse_mode="Markdown",
+                    reply_markup=build_keyboard(BANK_OPTIONS, "expense:banco"),
+                )
+            except RuntimeError as exc:
+                logger.warning("Falha ao buscar cotação automática (voz): %s", exc)
+                expense["stage"] = "awaiting_exchange_rate"
+                pedir_cotacao_manual(chat_id, call.message.message_id)
+        return
+
+    bot.answer_callback_query(call.id, "Ação não reconhecida.")
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("expense:"))
