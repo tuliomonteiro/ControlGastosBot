@@ -1,5 +1,4 @@
 import os
-import io
 import logging
 import telebot
 from dotenv import load_dotenv
@@ -544,11 +543,9 @@ def processar_formato_legado(message, partes):
 
 
 def transcrever_audio(file_content: bytes) -> str:
-    audio_file = io.BytesIO(file_content)
-    audio_file.name = "audio.ogg"
     transcript = openai_client.audio.transcriptions.create(
         model="whisper-1",
-        file=audio_file,
+        file=("audio.ogg", file_content, "audio/ogg"),
         language="pt",
     )
     return transcript.text
@@ -668,11 +665,12 @@ def handle_voice(message):
         )
 
     except Exception as e:
-        logger.error("Erro no reconhecimento de voz: %s", e)
+        logger.exception("Erro no reconhecimento de voz")
         bot.edit_message_text(
-            "❌ Erro ao processar o áudio. Tente novamente.",
+            f"❌ Erro ao processar o áudio: `{type(e).__name__}: {e}`\n\nTente novamente.",
             chat_id=chat_id,
             message_id=processing_msg.message_id,
+            parse_mode="Markdown",
         )
 
 
