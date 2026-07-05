@@ -1,4 +1,5 @@
 import os
+import logging
 import telebot
 from dotenv import load_dotenv
 import unicodedata
@@ -14,6 +15,13 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # carregar as variaves do .env
 load_dotenv()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 #busca o token
 TOKEN_BOT = os.getenv('TELEGRAM_TOKEN')
@@ -42,18 +50,25 @@ def webhook():
     return '', 403
 
 # --- CONFIGURAÇÃO GOOGLE SHEETS ---
-try:
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
-    client = gspread.authorize(creds)
+planilha_doc = None
+planilha = None
 
-    # Abrindo a planilha pelo ID e a aba específica pelo nome
-    planilha_doc = client.open_by_key(SHEET_KEY)
-    planilha = planilha_doc.worksheet("2026")
+def get_current_sheet_name():
+    return str(datetime.now().year)
 
-    print("✅ Conexão com Google Sheets estabelecida!")
-except Exception as e:
-    print(f"❌ Erro na conexão com Google Sheets: {e}")
+def connect_sheets():
+    global planilha_doc, planilha
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+        client = gspread.authorize(creds)
+        planilha_doc = client.open_by_key(SHEET_KEY)
+        planilha = planilha_doc.worksheet(get_current_sheet_name())
+        logger.info("Conexão com Google Sheets estabelecida (aba: %s)", get_current_sheet_name())
+    except Exception as e:
+        logger.error("Erro na conexão com Google Sheets: %s", e)
+
+connect_sheets()
 
 map = {
   'Mercado': ['MERCADO', 'FORTIS', 'SUPERSEIS', 'BOX', 'STOCK', 'LA MODERNA', 'SUPERMERCADO', 'LA HUERTA'],
@@ -377,9 +392,7 @@ def salvar_gasto(chat_id):
         "exchange_rates": exchange_rates,
     }
 
-    print(f"\n--- NOVO GASTO ---")
-    print(f"Data: {fecha} | Cat: {expense['cat']}")
-    print(f"Valor Final: {valor_final_format}")
+    logger.info("Gasto salvo | Data: %s | Cat: %s | Valor: %s Gs", fecha, expense['cat'], valor_final_format)
 
     del pending_expenses[chat_id]
 
@@ -479,14 +492,10 @@ def processar_formato_legado(message, partes):
 
     else:
         bot.reply_to(message, "❌ Mensagem fora do padrão! Use 5 partes para Gs ou 7 para outras moedas.")
-        print(f"\n--- ERRO ---")
-        print(f"Mensagem fora do padrão! Use 5 partes para Gs ou 7 para outras moedas.")
-        print(f"Mensagem: {message.text}")
+        logger.warning("Formato legado inválido: %s", message.text)
         return
 
-    print(f"\n--- NOVO GASTO ---")
-    print(f"Data: {fecha} | Cat: {cat}")
-    print(f"Valor Final: {valor_final_format}")
+    logger.info("Gasto salvo (legado) | Data: %s | Cat: %s | Valor: %s Gs", fecha, cat, valor_final_format)
 
     bot.reply_to(message, mensagem_resposta, parse_mode="Markdown")
 
@@ -548,7 +557,7 @@ def handle_expense_callbacks(call):
         try:
             cotizacao, data_cotacao = buscar_cotacao_guarani(expense["moeda"])
         except RuntimeError as exc:
-            print(f"⚠️ {exc}")
+            logger.warning("Falha ao buscar cotação automática: %s", exc)
             pedir_cotacao_manual(chat_id, call.message.message_id)
             return
 
@@ -648,7 +657,7 @@ def handle_expense_callbacks(call):
 # --- HANDLER 2: OUVINTE GERAL (FINANÇAS) ---
 @bot.message_handler(func=lambda message: True)
 def processar_gastos(message):
-    print(f"NOME DO CHAT: {message.chat.title} | ID: {message.chat.id}")
+    logger.info("Mensagem recebida | Chat: %s | ID: %s", message.chat.title, message.chat.id)
     # mensagem original
     mensagem_bruta = message.text
 
@@ -713,7 +722,7 @@ if __name__ == "__main__":
     # Configura o webhook
     webhook_url = f"{WEBHOOK_URL}/webhook"
     bot.set_webhook(url=webhook_url)
-    print(f"✅ Webhook configurado: {webhook_url}")
+    logger.info("Webhook configurado: %s", webhook_url)
     
     # Inicia o servidor Flask
     port = int(os.environ.get('PORT', 5000))
