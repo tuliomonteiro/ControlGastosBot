@@ -538,9 +538,28 @@ def handle_expense_callbacks(call):
         return
 
     if action[1] == "banco":
-        expense["stage"] = "awaiting_payment"
         expense["banco"] = action[2]
         bot.answer_callback_query(call.id, f"Banco: {action[2]}")
+
+        if expense["banco"] == "EFECTIVO":
+            expense["forma"] = "EFECTIVO"
+            expense["stage"] = "awaiting_invoice"
+            bot.edit_message_text(
+                (
+                    "🧾 *Tem factura?*\n\n"
+                    f"Descricao: {expense['desc']}\n"
+                    f"Valor: {formatar_guaranis(expense['valor_final'])} Gs\n"
+                    f"Banco: {expense['banco']}\n"
+                    f"Forma: {expense['forma']}"
+                ),
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                parse_mode="Markdown",
+                reply_markup=build_keyboard(INVOICE_OPTIONS, "expense:factura"),
+            )
+            return
+
+        expense["stage"] = "awaiting_payment"
         bot.edit_message_text(
             (
                 "💳 *Escolha a forma de pagamento*\n\n"
