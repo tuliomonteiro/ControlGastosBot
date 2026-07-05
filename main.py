@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 TOKEN_BOT = os.getenv('TELEGRAM_TOKEN')
 SHEET_KEY = os.getenv('SHEET_KEY')
 WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://controlgastosbot.onrender.com')
-EXCHANGE_RATE_API_URL = os.getenv("EXCHANGE_RATE_API_URL", "https://api.frankfurter.dev/v1/latest")
+EXCHANGE_RATE_API_URL = os.getenv("EXCHANGE_RATE_API_URL", "https://api.exchangerate-api.com/v4/latest")
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET')
 MAX_VOICE_DURATION = int(os.getenv("MAX_VOICE_DURATION", "120"))  # seconds
@@ -289,10 +289,10 @@ def buscar_cotacao_guarani(currency):
     if currency == "Gs":
         return 1, None
 
-    url = f"{EXCHANGE_RATE_API_URL}?base={currency}&symbols=PYG"
+    url = f"{EXCHANGE_RATE_API_URL}/{currency}"
 
     try:
-        with urlopen(url, timeout=5) as response:
+        with urlopen(url, timeout=8) as response:
             payload = json.load(response)
     except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
         raise RuntimeError(f"Falha ao consultar cotacao para {currency}: {exc}") from exc
@@ -300,13 +300,16 @@ def buscar_cotacao_guarani(currency):
     rates = payload.get("rates", {})
     rate = rates.get("PYG")
     if rate is None:
+        logger.warning("API de câmbio não retornou PYG para %s. Resposta: %s", currency, payload)
         raise RuntimeError(f"Resposta sem taxa PYG para {currency}.")
 
     cotizacao = int(round(float(rate) * EXCHANGE_RATE_SPREAD))
     if cotizacao <= 0:
         raise RuntimeError(f"Cotacao invalida recebida para {currency}: {rate}")
 
-    return cotizacao, payload.get("date")
+    date = payload.get("date") or payload.get("time_last_update_utc", "")
+    logger.info("Cotação %s/PYG: %s (x%.2f spread = %s)", currency, rate, EXCHANGE_RATE_SPREAD, cotizacao)
+    return cotizacao, date
 
 
 def montar_resumo_gasto(expense):
@@ -422,7 +425,8 @@ def continuar_apos_voz(chat_id, message_id):
             cotizacao, _ = buscar_cotacao_guarani(expense["moeda"])
             expense["cotizacao"] = cotizacao
             expense["valor_final"] = expense["valor"] * cotizacao
-        except RuntimeError:
+        except RuntimeError as exc:
+            logger.warning("Cotação automática falhou ao continuar fluxo para %s: %s", expense["moeda"], exc)
             expense["stage"] = "awaiting_exchange_rate"
             pedir_cotacao_manual(chat_id, message_id)
             return
@@ -744,8 +748,8 @@ def handle_voice(message):
                 cotizacao, rate_date = buscar_cotacao_guarani(moeda)
                 valor_final = valor * cotizacao
                 rate_note = f" (+1% spread, ref. {rate_date})" if rate_date else " (+1% spread)"
-            except RuntimeError:
-                pass  # will ask for rate later in the flow
+            except RuntimeError as exc:
+                logger.warning("Cotação automática falhou para %s: %s", moeda, exc)
 
         expense = {
             "desc": desc,
@@ -1109,17 +1113,16 @@ def processar_gastos(message):
 
         pending["cotizacao"] = cotizacao
         pending["valor_final"] = pending["valor"] * cotizacao
-        pending["stage"] = "awaiting_bank"
-        bot.reply_to(
+
+        rate_msg = bot.reply_to(
             message,
             (
-                f"📈 *Cotacao registrada:* {cotizacao}\n"
-                f"💵 *Valor final:* {formatar_guaranis(pending['valor_final'])} Gs\n\n"
-                "Escolha o banco:"
+                f"📈 *Cotação registrada:* {cotizacao}\n"
+                f"💵 *Valor final:* {formatar_guaranis(pending['valor_final'])} Gs"
             ),
             parse_mode="Markdown",
-            reply_markup=build_keyboard(BANK_OPTIONS, "expense:banco"),
         )
+        continuar_apos_voz(message.chat.id, rate_msg.message_id)
         return
 
     if ";" in mensagem_bruta:
