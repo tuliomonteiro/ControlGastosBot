@@ -1,0 +1,3 @@
+-- Intentionally empty for now.
+-- Shared categories are seeded in the initial migration because they are app
+-- defaults. Accounts remain user-specific and should not be seeded globally.
