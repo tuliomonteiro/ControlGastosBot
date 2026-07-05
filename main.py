@@ -1109,17 +1109,16 @@ def processar_gastos(message):
 
         pending["cotizacao"] = cotizacao
         pending["valor_final"] = pending["valor"] * cotizacao
-        pending["stage"] = "awaiting_bank"
-        bot.reply_to(
+
+        rate_msg = bot.reply_to(
             message,
             (
-                f"📈 *Cotacao registrada:* {cotizacao}\n"
-                f"💵 *Valor final:* {formatar_guaranis(pending['valor_final'])} Gs\n\n"
-                "Escolha o banco:"
+                f"📈 *Cotação registrada:* {cotizacao}\n"
+                f"💵 *Valor final:* {formatar_guaranis(pending['valor_final'])} Gs"
             ),
             parse_mode="Markdown",
-            reply_markup=build_keyboard(BANK_OPTIONS, "expense:banco"),
         )
+        continuar_apos_voz(message.chat.id, rate_msg.message_id)
         return
 
     if ";" in mensagem_bruta:
