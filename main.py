@@ -31,6 +31,11 @@ SHEET_KEY = os.getenv('SHEET_KEY')
 WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://controlgastosbot.onrender.com')
 EXCHANGE_RATE_API_URL = os.getenv("EXCHANGE_RATE_API_URL", "https://api.frankfurter.dev/v1/latest")
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET')
+MAX_VOICE_DURATION = int(os.getenv("MAX_VOICE_DURATION", "120"))  # seconds
+ALLOWED_CHAT_IDS: set[int] = set(
+    int(x) for x in os.getenv("ALLOWED_CHAT_IDS", "").split(",") if x.strip()
+)
 
 # cria uma instancia do bot
 bot = telebot.TeleBot(TOKEN_BOT)
@@ -47,6 +52,9 @@ def health_check():
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Endpoint para receber atualizações do Telegram"""
+    if WEBHOOK_SECRET:
+        if request.headers.get('X-Telegram-Bot-Api-Secret-Token', '') != WEBHOOK_SECRET:
+            return '', 403
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
         update = telebot.types.Update.de_json(json_string)
@@ -143,6 +151,23 @@ CURRENCY_OPTIONS = [
     ("BRL", "BRL"),
     ("ARS", "ARS"),
 ]
+
+VALID_BANKS = {v for v, _ in BANK_OPTIONS}
+VALID_PAYMENTS = {v for v, _ in PAYMENT_OPTIONS}
+VALID_INVOICES = {v for v, _ in INVOICE_OPTIONS}
+VALID_CURRENCIES = {v for v, _ in CURRENCY_OPTIONS}
+
+_FORMULA_PREFIXES = ('=', '+', '-', '@', '\t', '\r')
+
+def sanitizar_celula(valor: str) -> str:
+    """Prevent Google Sheets formula injection by prefixing dangerous chars."""
+    if isinstance(valor, str) and valor.startswith(_FORMULA_PREFIXES):
+        return "'" + valor
+    return valor
+
+def is_allowed(chat_id: int) -> bool:
+    """Return True if the chat is permitted to use this bot."""
+    return not ALLOWED_CHAT_IDS or chat_id in ALLOWED_CHAT_IDS
 
 pending_expenses = {}
 user_defaults = {}
@@ -387,16 +412,16 @@ def salvar_gasto(chat_id):
     exchange_rates = defaults.get("exchange_rates", {})
 
     dados_linha = [
-        expense["desc"],
+        sanitizar_celula(expense["desc"]),
         expense["valor"],
         expense["moeda"],
         expense["cotizacao"],
         valor_final_format,
         fecha,
-        expense["cat"],
-        expense["banco"],
-        expense["forma"],
-        expense["factura"],
+        sanitizar_celula(expense["cat"]),
+        sanitizar_celula(expense["banco"]),
+        sanitizar_celula(expense["forma"]),
+        sanitizar_celula(expense["factura"]),
     ]
     planilha.append_row(dados_linha)
 
@@ -565,8 +590,18 @@ def build_voice_confirmation_keyboard():
 def handle_voice(message):
     chat_id = message.chat.id
 
+    if not is_allowed(chat_id):
+        return
+
     if not openai_client:
         bot.reply_to(message, "❌ Reconhecimento de voz não configurado. Defina OPENAI_API_KEY.")
+        return
+
+    if message.voice.duration > MAX_VOICE_DURATION:
+        bot.reply_to(
+            message,
+            f"❌ Áudio muito longo ({message.voice.duration}s). Máximo: {MAX_VOICE_DURATION}s.",
+        )
         return
 
     processing_msg = bot.reply_to(message, "🎤 Processando áudio...")
@@ -644,6 +679,9 @@ def handle_voice(message):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("voice:"))
 def handle_voice_callbacks(call):
     chat_id = call.message.chat.id
+    if not is_allowed(chat_id):
+        bot.answer_callback_query(call.id)
+        return
     action = call.data.split(":", 1)[1]
 
     if action == "retry":
@@ -703,6 +741,9 @@ def handle_voice_callbacks(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("expense:"))
 def handle_expense_callbacks(call):
     chat_id = call.message.chat.id
+    if not is_allowed(chat_id):
+        bot.answer_callback_query(call.id)
+        return
     expense = pending_expenses.get(chat_id)
 
     if call.data == "expense:cancel":
@@ -725,6 +766,9 @@ def handle_expense_callbacks(call):
         return
 
     if action[1] == "banco":
+        if action[2] not in VALID_BANKS:
+            bot.answer_callback_query(call.id, "Banco inválido.")
+            return
         expense["banco"] = action[2]
         bot.answer_callback_query(call.id, f"Banco: {action[2]}")
 
@@ -762,6 +806,9 @@ def handle_expense_callbacks(call):
         return
 
     if action[1] == "currency":
+        if action[2] not in VALID_CURRENCIES:
+            bot.answer_callback_query(call.id, "Moeda inválida.")
+            return
         expense["moeda"] = action[2]
         if expense["moeda"] == "Gs":
             expense["cotizacao"] = 1
@@ -829,6 +876,9 @@ def handle_expense_callbacks(call):
         return
 
     if action[1] == "forma":
+        if action[2] not in VALID_PAYMENTS:
+            bot.answer_callback_query(call.id, "Forma de pagamento inválida.")
+            return
         expense["stage"] = "awaiting_invoice"
         expense["forma"] = action[2]
         bot.answer_callback_query(call.id, f"Forma: {action[2]}")
@@ -848,6 +898,9 @@ def handle_expense_callbacks(call):
         return
 
     if action[1] == "factura":
+        if action[2] not in VALID_INVOICES:
+            bot.answer_callback_query(call.id, "Opção de factura inválida.")
+            return
         expense["stage"] = "awaiting_confirmation"
         expense["factura"] = action[2]
         bot.answer_callback_query(call.id, f"Factura: {action[2]}")
@@ -876,6 +929,8 @@ def handle_expense_callbacks(call):
 # --- HANDLER 2: OUVINTE GERAL (FINANÇAS) ---
 @bot.message_handler(func=lambda message: True)
 def processar_gastos(message):
+    if not is_allowed(message.chat.id):
+        return
     logger.info("Mensagem recebida | Chat: %s | ID: %s", message.chat.title, message.chat.id)
     # mensagem original
     mensagem_bruta = message.text
@@ -940,7 +995,7 @@ if __name__ == "__main__":
     
     # Configura o webhook
     webhook_url = f"{WEBHOOK_URL}/webhook"
-    bot.set_webhook(url=webhook_url)
+    bot.set_webhook(url=webhook_url, secret_token=WEBHOOK_SECRET or None)
     logger.info("Webhook configurado: %s", webhook_url)
     
     # Inicia o servidor Flask
