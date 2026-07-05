@@ -1,0 +1,80 @@
+.shell {
+  min-height: 100dvh;
+  padding: 24px;
+}
+
+.frame {
+  max-width: 1120px;
+  margin: 0 auto;
+  display: grid;
+  gap: 24px;
+}
+
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1px solid rgba(78, 58, 27, 0.12);
+  border-radius: 28px;
+  background: rgba(255, 251, 244, 0.9);
+  box-shadow: 0 18px 45px rgba(93, 71, 33, 0.08);
+  padding: 24px 28px;
+}
+
+.brand p {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #7a5b2b;
+}
+
+.brand h1 {
+  margin-top: 8px;
+  font-size: 1.5rem;
+}
+
+.meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.meta span {
+  color: rgba(29, 34, 28, 0.72);
+}
+
+.meta button {
+  border: 0;
+  border-radius: 999px;
+  background: #1d221c;
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  padding: 10px 16px;
+  cursor: pointer;
+}
+
+.nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.nav a {
+  border-radius: 999px;
+  border: 1px solid rgba(122, 91, 43, 0.16);
+  background: rgba(245, 236, 220, 0.85);
+  padding: 10px 14px;
+}
+
+.content {
+  border: 1px solid rgba(78, 58, 27, 0.12);
+  border-radius: 28px;
+  background: rgba(255, 251, 244, 0.9);
+  box-shadow: 0 18px 45px rgba(93, 71, 33, 0.08);
+  padding: 28px;
+}
