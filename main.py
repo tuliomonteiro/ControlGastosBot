@@ -645,13 +645,14 @@ def extrair_gasto_do_texto(transcript: str) -> dict:
         '- "factura": exatamente "SI" ou "NO" ou null se não mencionado\n'
         f'- "fecha": data no formato DD/MM/AAAA (use {hoje} se não mencionada)\n\n'
         'Regras de normalização:\n'
-        '"crédito"/"no crédito"/"credit" → "CREDITO"\n'
-        '"débito"/"no débito" → "DEBITO"\n'
-        '"com factura"/"com nota"/"com fatura" → "SI"\n'
-        '"sem factura"/"sem nota"/"sem fatura" → "NO"\n'
+        '"crédito"/"no crédito"/"credit" → forma "CREDITO"\n'
+        '"débito"/"no débito" → forma "DEBITO"\n'
+        '"com factura"/"com nota"/"com fatura" → factura "SI"\n'
+        '"sem factura"/"sem nota"/"sem fatura" → factura "NO"\n'
         '"guaranis"/"guaranies"/"Gs" → moeda "Gs"\n'
         '"reais"/"real"/"BRL" → moeda "BRL"\n'
         '"dólares"/"dolares"/"USD" → moeda "USD"\n'
+        '"efectivo"/"dinheiro"/"em dinheiro"/"pagamento em dinheiro"/"cash" → banco "EFECTIVO"\n'
         'Responda APENAS com o JSON.'
     )
     response = openai_client.chat.completions.create(
@@ -714,7 +715,9 @@ def handle_voice(message):
             moeda = "Gs"
         if banco not in VALID_BANKS:
             banco = None
-        if forma not in VALID_PAYMENTS:
+        if banco == "EFECTIVO":
+            forma = "EFECTIVO"
+        elif forma not in VALID_PAYMENTS:
             forma = None
         if factura not in VALID_INVOICES:
             factura = None
@@ -903,20 +906,34 @@ def handle_expense_callbacks(call):
 
         if expense["banco"] == "EFECTIVO":
             expense["forma"] = "EFECTIVO"
-            expense["stage"] = "awaiting_invoice"
-            bot.edit_message_text(
-                (
-                    "🧾 *Tem factura?*\n\n"
-                    f"Descricao: {expense['desc']}\n"
-                    f"Valor: {formatar_guaranis(expense['valor_final'])} Gs\n"
-                    f"Banco: {expense['banco']}\n"
-                    f"Forma: {expense['forma']}"
-                ),
-                chat_id=chat_id,
-                message_id=call.message.message_id,
-                parse_mode="Markdown",
-                reply_markup=build_keyboard(INVOICE_OPTIONS, "expense:factura"),
-            )
+            if expense.get("factura") is not None:
+                expense["stage"] = "awaiting_confirmation"
+                bot.edit_message_text(
+                    montar_resumo_gasto(expense),
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
+                    parse_mode="Markdown",
+                    reply_markup=build_confirmation_keyboard(),
+                )
+            else:
+                expense["stage"] = "awaiting_invoice"
+                pedir_factura(chat_id, call.message.message_id)
+            return
+
+        # Skip forma if already captured (e.g. from voice)
+        if expense.get("forma") is not None:
+            if expense.get("factura") is not None:
+                expense["stage"] = "awaiting_confirmation"
+                bot.edit_message_text(
+                    montar_resumo_gasto(expense),
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
+                    parse_mode="Markdown",
+                    reply_markup=build_confirmation_keyboard(),
+                )
+            else:
+                expense["stage"] = "awaiting_invoice"
+                pedir_factura(chat_id, call.message.message_id)
             return
 
         expense["stage"] = "awaiting_payment"
@@ -1008,22 +1025,33 @@ def handle_expense_callbacks(call):
         if action[2] not in VALID_PAYMENTS:
             bot.answer_callback_query(call.id, "Forma de pagamento inválida.")
             return
-        expense["stage"] = "awaiting_invoice"
         expense["forma"] = action[2]
         bot.answer_callback_query(call.id, f"Forma: {action[2]}")
-        bot.edit_message_text(
-            (
-                "🧾 *Tem factura?*\n\n"
-                f"Descricao: {expense['desc']}\n"
-                f"Valor: {formatar_guaranis(expense['valor_final'])} Gs\n"
-                f"Banco: {expense['banco']}\n"
-                f"Forma: {expense['forma']}"
-            ),
-            chat_id=chat_id,
-            message_id=call.message.message_id,
-            parse_mode="Markdown",
-            reply_markup=build_keyboard(INVOICE_OPTIONS, "expense:factura"),
-        )
+        # Skip factura if already captured (e.g. from voice)
+        if expense.get("factura") is not None:
+            expense["stage"] = "awaiting_confirmation"
+            bot.edit_message_text(
+                montar_resumo_gasto(expense),
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                parse_mode="Markdown",
+                reply_markup=build_confirmation_keyboard(),
+            )
+        else:
+            expense["stage"] = "awaiting_invoice"
+            bot.edit_message_text(
+                (
+                    "🧾 *Tem factura?*\n\n"
+                    f"Descricao: {expense['desc']}\n"
+                    f"Valor: {formatar_guaranis(expense['valor_final'])} Gs\n"
+                    f"Banco: {expense['banco']}\n"
+                    f"Forma: {expense['forma']}"
+                ),
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                parse_mode="Markdown",
+                reply_markup=build_keyboard(INVOICE_OPTIONS, "expense:factura"),
+            )
         return
 
     if action[1] == "factura":
