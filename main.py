@@ -132,7 +132,10 @@ BANK_OPTIONS = [
     ("NUBANK", "Nubank"),
     ("C6", "C6"),
     ("CORA", "Cora"),
-    ("RENDIMENTO", "Rendimento"), 
+    ("RENDIMENTO", "Rendimento"),
+    ("OFFRAMP", "Offramp"),
+    ("UGLYCASH", "Uglycash"),
+    ("DEEL", "Deel"),
 ]
 
 PAYMENT_OPTIONS = [
