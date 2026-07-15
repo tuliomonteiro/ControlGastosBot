@@ -261,8 +261,10 @@ def build_keyboard(options, prefix, row_width=2):
     return keyboard
 
 
-def build_confirmation_keyboard():
+def build_confirmation_keyboard(expense):
     keyboard = InlineKeyboardMarkup(row_width=2)
+    if expense.get("banco") != "EFECTIVO":
+        keyboard.add(InlineKeyboardButton("🔄 Trocar forma", callback_data="expense:change_forma"))
     keyboard.add(
         InlineKeyboardButton("Salvar", callback_data="expense:confirm"),
         InlineKeyboardButton("Cancelar", callback_data="expense:cancel"),
@@ -450,7 +452,7 @@ def continuar_apos_voz(chat_id, message_id):
             chat_id=chat_id,
             message_id=message_id,
             parse_mode="Markdown",
-            reply_markup=build_confirmation_keyboard(),
+            reply_markup=build_confirmation_keyboard(expense),
         )
 
 
@@ -920,7 +922,7 @@ def handle_expense_callbacks(call):
                     chat_id=chat_id,
                     message_id=call.message.message_id,
                     parse_mode="Markdown",
-                    reply_markup=build_confirmation_keyboard(),
+                    reply_markup=build_confirmation_keyboard(expense),
                 )
             else:
                 expense["stage"] = "awaiting_invoice"
@@ -936,7 +938,7 @@ def handle_expense_callbacks(call):
                     chat_id=chat_id,
                     message_id=call.message.message_id,
                     parse_mode="Markdown",
-                    reply_markup=build_confirmation_keyboard(),
+                    reply_markup=build_confirmation_keyboard(expense),
                 )
             else:
                 expense["stage"] = "awaiting_invoice"
@@ -1028,6 +1030,16 @@ def handle_expense_callbacks(call):
         pedir_banco(chat_id, call.message.message_id)
         return
 
+    if action[1] == "change_forma":
+        if expense.get("banco") == "EFECTIVO":
+            bot.answer_callback_query(call.id, "Gasto em efectivo não usa forma de pagamento.")
+            return
+        expense["stage"] = "awaiting_payment"
+        expense["forma"] = None
+        bot.answer_callback_query(call.id, "Escolha outra forma.")
+        pedir_forma(chat_id, call.message.message_id)
+        return
+
     if action[1] == "forma":
         if action[2] not in VALID_PAYMENTS:
             bot.answer_callback_query(call.id, "Forma de pagamento inválida.")
@@ -1042,7 +1054,7 @@ def handle_expense_callbacks(call):
                 chat_id=chat_id,
                 message_id=call.message.message_id,
                 parse_mode="Markdown",
-                reply_markup=build_confirmation_keyboard(),
+                reply_markup=build_confirmation_keyboard(expense),
             )
         else:
             expense["stage"] = "awaiting_invoice"
@@ -1073,7 +1085,7 @@ def handle_expense_callbacks(call):
             chat_id=chat_id,
             message_id=call.message.message_id,
             parse_mode="Markdown",
-            reply_markup=build_confirmation_keyboard(),
+            reply_markup=build_confirmation_keyboard(expense),
         )
         return
 
