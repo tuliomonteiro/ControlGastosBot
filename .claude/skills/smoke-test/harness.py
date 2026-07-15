@@ -333,6 +333,44 @@ def s7():
     assert 8 not in main.pending_expenses
 
 
+@scenario("Trocar forma overrides a sticky default (regression: forma inherited silently, no way to change it)")
+def s8():
+    send_text(9, "gasto1 1000")
+    press(9, "expense:currency:Gs")
+    press(9, "expense:banco:CONTINENTAL")
+    press(9, "expense:forma:DEBITO")
+    press(9, "expense:factura:NO")
+    press(9, "expense:confirm")
+    assert main.user_defaults[9]["forma"] == "DEBITO"
+
+    send_text(9, "gasto2 2000")
+    press(9, "expense:currency:Gs")
+    press(9, "expense:banco:CONTINENTAL")
+    assert main.pending_expenses[9]["forma"] == "DEBITO", "forma should be pre-filled from the last expense"
+    assert "confirme" in last("edit")["text"].lower(), "should skip straight to confirmation"
+    assert "expense:change_forma" in last_keyboard_datas(), "confirmation must offer a way to override forma"
+
+    press(9, "expense:change_forma")
+    assert "forma de pagamento" in last("edit")["text"].lower()
+    assert main.pending_expenses[9]["forma"] is None
+    press(9, "expense:forma:CREDITO")
+    press(9, "expense:factura:NO")
+    press(9, "expense:confirm")
+    row = sheet.rows[-1]
+    assert row[8] == "CREDITO", f"override should have saved CREDITO, got {row[8]}"
+
+
+@scenario("EFECTIVO confirmation hides the forma override button")
+def s9():
+    send_text(10, "efectivo teste 3000")
+    press(10, "expense:currency:Gs")
+    press(10, "expense:banco:EFECTIVO")
+    press(10, "expense:factura:NO")
+    assert "confirme" in last("edit")["text"].lower()
+    assert "expense:change_forma" not in last_keyboard_datas(), "cash expenses have no forma to override"
+    press(10, "expense:confirm")
+
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} scenario(s) FAILED: {', '.join(FAILURES)}")
