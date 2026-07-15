@@ -629,11 +629,23 @@ def processar_formato_legado(message, partes):
     bot.reply_to(message, mensagem_resposta, parse_mode="Markdown")
 
 
+def build_transcription_vocabulary() -> str:
+    """Vocabulary hint passed to Whisper's `prompt` param to bias transcription
+    toward local proper nouns it otherwise mishears (bank names, merchants)."""
+    bancos = ", ".join(nome for _, nome in BANK_OPTIONS)
+    return (
+        f"Gasto em guaranis, reais ou dólares. Bancos: {bancos}. "
+        "Outras palavras: crédito, débito, factura, efectivo, lava-jato, "
+        "pedágio, Auris, Bolt, Uber."
+    )
+
+
 def transcrever_audio(file_content: bytes) -> str:
     transcript = openai_client.audio.transcriptions.create(
         model="whisper-1",
         file=("audio.ogg", file_content, "audio/ogg"),
         language="pt",
+        prompt=build_transcription_vocabulary(),
     )
     return transcript.text
 

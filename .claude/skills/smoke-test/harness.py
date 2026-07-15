@@ -371,6 +371,25 @@ def s9():
     press(10, "expense:confirm")
 
 
+@scenario("Whisper transcription is biased with a bank/vocabulary prompt (regression: Meru/Auris mistranscribed)")
+def s10():
+    calls = []
+
+    class FakeTranscriptions:
+        def create(self, **kw):
+            calls.append(kw)
+            return SimpleNamespace(text="lava-jato auris cinquenta mil")
+
+    main.openai_client = SimpleNamespace(
+        audio=SimpleNamespace(transcriptions=FakeTranscriptions())
+    )
+    main.transcrever_audio(b"fake-ogg-bytes")
+    assert calls, "transcriptions.create was not called"
+    prompt = calls[0].get("prompt", "")
+    assert "Meru" in prompt, f"vocabulary prompt missing bank name Meru: {prompt!r}"
+    assert "Auris" in prompt, f"vocabulary prompt missing known problem word Auris: {prompt!r}"
+
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} scenario(s) FAILED: {', '.join(FAILURES)}")
