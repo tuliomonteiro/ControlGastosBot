@@ -347,7 +347,9 @@ def s8():
     press(9, "expense:currency:Gs")
     press(9, "expense:banco:CONTINENTAL")
     assert main.pending_expenses[9]["forma"] == "DEBITO", "forma should be pre-filled from the last expense"
-    assert "confirme" in last("edit")["text"].lower(), "should skip straight to confirmation"
+    assert "factura" in last("edit")["text"].lower(), "factura is always asked fresh, so it's next, not confirmation"
+    press(9, "expense:factura:NO")
+    assert "confirme" in last("edit")["text"].lower(), "should reach confirmation once factura is answered"
     assert "expense:change_forma" in last_keyboard_datas(), "confirmation must offer a way to override forma"
 
     press(9, "expense:change_forma")
@@ -388,6 +390,30 @@ def s10():
     prompt = calls[0].get("prompt", "")
     assert "Meru" in prompt, f"vocabulary prompt missing bank name Meru: {prompt!r}"
     assert "Auris" in prompt, f"vocabulary prompt missing known problem word Auris: {prompt!r}"
+
+
+@scenario("factura is always asked fresh, never inherited from the last expense (regression: sticky NO default)")
+def s11():
+    send_text(11, "gasto1 1000")
+    press(11, "expense:currency:Gs")
+    press(11, "expense:banco:CONTINENTAL")
+    press(11, "expense:forma:DEBITO")
+    assert "factura" in last("edit")["text"].lower(), "factura must be asked on the first expense"
+    press(11, "expense:factura:NO")
+    press(11, "expense:confirm")
+
+    send_text(11, "gasto2 2000")
+    press(11, "expense:currency:Gs")
+    press(11, "expense:banco:CONTINENTAL")
+    assert main.pending_expenses[11]["forma"] == "DEBITO", "forma still pre-fills from defaults"
+    assert main.pending_expenses[11]["factura"] is None, "factura must NOT be pre-filled from the last expense"
+    assert "factura" in last("edit")["text"].lower(), "factura buttons must show again, not skip to confirmation"
+    assert "expense:factura:SI" in last_keyboard_datas()
+
+    press(11, "expense:factura:SI")
+    press(11, "expense:confirm")
+    row = sheet.rows[-1]
+    assert row[9] == "SI", f"expected this expense's own factura choice SI, got {row[9]}"
 
 
 print()

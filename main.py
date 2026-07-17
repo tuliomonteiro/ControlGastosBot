@@ -471,7 +471,7 @@ def iniciar_fluxo_interativo(message, desc, valor, fecha):
         "cat": cat,
         "banco": defaults.get("banco"),
         "forma": defaults.get("forma"),
-        "factura": defaults.get("factura"),
+        "factura": None,
         "stage": "awaiting_currency",
     }
 
