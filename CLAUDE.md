@@ -42,8 +42,11 @@ column-order rule below for the one coupling that bites.
 **Data model.** One in-memory dict per chat in `pending_expenses[chat_id]` with keys
 `desc, valor, fecha, moeda, cotizacao, valor_final, cat, banco, forma, factura,
 stage`. `None` means "not captured yet". `user_defaults[chat_id]` remembers last
-banco/forma/factura and exchange rates. **All of this is RAM — every Render deploy
-or restart wipes it.** Never build a feature that assumes state survives a restart.
+banco/forma and exchange rates for pre-filling new expenses; `factura` is stored
+there too (for the sheet-row history) but deliberately NOT read back to pre-fill —
+it varies per purchase, so the guided flow always asks it fresh. **All of this is
+RAM — every Render deploy or restart wipes it.** Never build a feature that
+assumes state survives a restart.
 
 **Stage machine.** `stage` values: `awaiting_currency`, `awaiting_exchange_rate`,
 `awaiting_bank`, `awaiting_payment`, `awaiting_invoice`, `awaiting_confirmation`,
