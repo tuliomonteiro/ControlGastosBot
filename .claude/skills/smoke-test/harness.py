@@ -416,6 +416,32 @@ def s11():
     assert row[9] == "SI", f"expected this expense's own factura choice SI, got {row[9]}"
 
 
+@scenario("Sheets outage on confirm shows a clear error and keeps the expense pending (regression: unhandled AttributeError/APIError on Google 503)")
+def s12():
+    send_text(12, "farmacia teste 4000")
+    press(12, "expense:currency:Gs")
+    press(12, "expense:banco:CONTINENTAL")
+    press(12, "expense:forma:DEBITO")
+    press(12, "expense:factura:NO")
+    assert "confirme" in last("edit")["text"].lower()
+
+    rows_before = len(sheet.rows)
+    main.planilha = None  # simulate connect_sheets() having failed at startup (Google 503)
+    try:
+        press(12, "expense:confirm")
+        text = last("edit")["text"]
+        assert "erro ao salvar" in text.lower(), f"expected a clear save-error message, got: {text!r}"
+        assert "RuntimeError" in text, f"error message should surface the exception type: {text!r}"
+        assert 12 in main.pending_expenses, "expense must stay pending so the user can retry"
+        assert len(sheet.rows) == rows_before, "no row should be written on failure"
+    finally:
+        main.planilha = sheet
+
+    press(12, "expense:confirm")
+    assert len(sheet.rows) == rows_before + 1, "retry after reconnect should save normally"
+    assert 12 not in main.pending_expenses
+
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} scenario(s) FAILED: {', '.join(FAILURES)}")

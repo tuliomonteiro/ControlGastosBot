@@ -94,6 +94,14 @@ def connect_sheets():
     except Exception as e:
         logger.error("Erro na conexão com Google Sheets: %s", e)
 
+def ensure_sheets_connected():
+    """connect_sheets() only runs once at import; if that attempt hit a transient
+    error (e.g. Google API 503 on a Render cold start), `planilha` stays None for
+    the rest of the process's life. Retry lazily before every write."""
+    if planilha is None:
+        connect_sheets()
+    return planilha is not None
+
 connect_sheets()
 
 map = {
@@ -510,6 +518,10 @@ def salvar_gasto(chat_id):
         sanitizar_celula(expense["forma"]),
         sanitizar_celula(expense["factura"]),
     ]
+
+    if not ensure_sheets_connected():
+        raise RuntimeError("Sem conexão com Google Sheets (reconexão falhou)")
+
     planilha.append_row(dados_linha)
 
     if expense["moeda"] != "Gs":
@@ -561,7 +573,16 @@ def processar_formato_legado(message, partes):
 
         dados_linha = [desc, valor, moeda, cotizacao, valor_final_format,
                         fecha, cat, banco, forma, factura]
-        planilha.append_row(dados_linha)
+        if not ensure_sheets_connected():
+            bot.reply_to(message, "❌ Erro ao salvar na planilha (RuntimeError: sem conexão com Google Sheets). Tente reenviar a mensagem.")
+            logger.error("Gasto legado não salvo: sem conexão com Google Sheets")
+            return
+        try:
+            planilha.append_row(dados_linha)
+        except Exception as e:
+            logger.exception("Erro ao salvar gasto legado (chat %s)", message.chat.id)
+            bot.reply_to(message, f"❌ Erro ao salvar na planilha ({type(e).__name__}). Tente reenviar a mensagem.")
+            return
 
         user_defaults[message.chat.id] = {
             "banco": banco,
@@ -599,7 +620,16 @@ def processar_formato_legado(message, partes):
 
         dados_linha = [desc, valor, moeda, cotizacao, valor_final_format,
                         fecha, cat, banco, forma, factura]
-        planilha.append_row(dados_linha)
+        if not ensure_sheets_connected():
+            bot.reply_to(message, "❌ Erro ao salvar na planilha (RuntimeError: sem conexão com Google Sheets). Tente reenviar a mensagem.")
+            logger.error("Gasto legado não salvo: sem conexão com Google Sheets")
+            return
+        try:
+            planilha.append_row(dados_linha)
+        except Exception as e:
+            logger.exception("Erro ao salvar gasto legado (chat %s)", message.chat.id)
+            bot.reply_to(message, f"❌ Erro ao salvar na planilha ({type(e).__name__}). Tente reenviar a mensagem.")
+            return
 
         user_defaults[message.chat.id] = {
             "banco": banco,
@@ -609,7 +639,7 @@ def processar_formato_legado(message, partes):
 
         mensagem_resposta = f"""
         ✅ *Gasto registrado!*
-        
+
         📝 *Descrição:* {desc}
         🏷️ *Categoria:* {cat}
         💰 *Origem:* {moeda} {valor}
@@ -871,7 +901,17 @@ def handle_voice_callbacks(call):
             bot.answer_callback_query(call.id, "Nenhum gasto pendente.")
             return
         bot.answer_callback_query(call.id, "Salvando...")
-        mensagem = salvar_gasto(chat_id)
+        try:
+            mensagem = salvar_gasto(chat_id)
+        except Exception as e:
+            logger.exception("Erro ao salvar gasto (chat %s)", chat_id)
+            bot.edit_message_text(
+                f"❌ Erro ao salvar na planilha ({type(e).__name__}). "
+                "O gasto não foi perdido, toque em Salvar para tentar de novo.",
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+            )
+            return
         bot.edit_message_text(
             mensagem,
             chat_id=chat_id,
@@ -1103,7 +1143,18 @@ def handle_expense_callbacks(call):
         return
 
     if action[1] == "confirm":
-        mensagem = salvar_gasto(chat_id)
+        try:
+            mensagem = salvar_gasto(chat_id)
+        except Exception as e:
+            logger.exception("Erro ao salvar gasto (chat %s)", chat_id)
+            bot.answer_callback_query(call.id, "Erro ao salvar.")
+            bot.edit_message_text(
+                f"❌ Erro ao salvar na planilha ({type(e).__name__}). "
+                "O gasto não foi perdido, toque em Confirmar para tentar de novo.",
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+            )
+            return
         bot.answer_callback_query(call.id, "Gasto salvo.")
         bot.edit_message_text(
             mensagem,
