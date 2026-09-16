@@ -10,8 +10,13 @@ Brazilian Portuguese, money is Paraguayan guaraní (Gs/PYG), some Spanish terms
    `main`. Writes expenses directly to a Google Sheet via `gspread` + a service
    account `credentials.json` (never in git). **This is production.**
 2. **`web/`** — Next.js 16 + React 19 + Supabase app. Migration target, partially
-   built. The `/api/telegram/webhook` route exists but the Python bot does NOT call
-   it yet. The Sheets-sync cron is a placeholder. **Not wired to production.**
+   built. The bot now mirrors every expense straight into the same Supabase DB
+   (see the Supabase mirror rules below), so the tables hold real data — but the
+   Next.js app itself is still not deployed. Its `/api/telegram/webhook` and
+   Sheets-sync cron routes are **both bypassed**: the bot talks to Supabase
+   directly, because routing through a Render free service that sleeps would add
+   a ~50s cold start before the user's confirmation. Leave those routes dormant
+   until the bot itself retires.
 3. **`google_script_telegram.gs`** — Apps Script pasted into the spreadsheet (not
    deployed from this repo). Sends weekly/monthly Telegram reports by reading sheet
    columns **by numeric index**. The committed copy is reference only; the live copy
@@ -80,6 +85,22 @@ factura]` (indices 0–9). The Apps Script reads `linha[4]` (valor final), `linh
 sheet rows since 2024 use this order. Never reorder or insert columns — new columns
 go at the END, and the Apps Script must be updated in the same PR.
 
+**Every sheet write goes through `registrar_linha(dados_linha)`** — never call
+`planilha.append_row` directly. It appends, derives the row identity from the
+append response (`sheet:<tab>:<row>`), and mirrors the expense into Supabase for
+the web dashboard. A write path that bypasses it silently stops feeding the
+dashboard, and nothing fails loudly to tell you.
+
+**The Supabase mirror is best-effort, the sheet is the source of truth.**
+`sincronizar_gasto_supabase` never raises: the expense is already safe in the
+sheet by the time it runs, so a failure is logged and the user still gets the
+normal ✅. Recovery is `/sync` (`reconciliar_planilha`), which re-reads the sheet
+and sends only rows whose `external_source_id` is missing — idempotent because
+the sheet is append-only, so the row number is stable identity. That same command
+is the historical backfill. Mapping happens at the boundary in `_payload_do_gasto`
+(`Gs`→`PYG`, `CREDITO`/`DEBITO`/`EFECTIVO`→`credit_card`/`debit_card`/`cash`,
+`SI`/`NO`→bool). Absent `SUPABASE_*` env vars disable the mirror entirely.
+
 **Money & dates.**
 - `valor_final` is written as a pt-BR formatted STRING (`1.234.567` via
   `formatar_guaranis`); `valor` is a raw number; `cotizacao` is an `int`.
@@ -144,6 +165,8 @@ dict) shadows the builtin; it's everywhere, leave the name alone.
 | 1 | Hardcoding the next flow step ("now show bank") after handling one field | Always advance via `continuar_apos_voz`. Happened twice in production. |
 | 2 | Reordering / inserting sheet columns | New columns append at the end; update Apps Script indices in the same PR. |
 | 3 | Writing to the sheet without `sanitizar_celula` on strings | Every string cell goes through it. |
+| 3b | Calling `planilha.append_row` directly in a new write path | Always `registrar_linha(dados_linha)`, or the Supabase mirror silently stops. |
+| 3c | Letting a Supabase failure surface to the user or abort the sheet write | The mirror is best-effort; log and continue, `/sync` reconciles. |
 | 4 | New handler without `is_allowed` / callback without validation / missing `answer_callback_query` | Apply the "guards on every entry point" checklist verbatim. |
 | 5 | Renaming `Gs` → `PYG` (or vice versa) for "consistency" | They are different systems' codes. Map at the boundary only. |
 | 6 | `except: pass` or generic error text | Log with `logger.exception`/`warning`; user-facing errors include `type(e).__name__`. |

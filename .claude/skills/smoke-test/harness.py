@@ -10,8 +10,10 @@ Exit code 0 = all scenarios passed. Any assertion failure prints the scenario
 name and the bot's message log for that chat.
 """
 import os
+import re
 import sys
 import types as pytypes
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
@@ -150,11 +152,23 @@ import main  # noqa: E402
 
 
 class FakeSheet:
+    title = "2026"
+
     def __init__(self):
         self.rows = []
 
     def append_row(self, row):
         self.rows.append(row)
+        # Shape mirrors gspread's real response; main._identificar_linha parses it.
+        return {
+            "updates": {
+                "updatedRange": f"'{self.title}'!A{len(self.rows)}:J{len(self.rows)}",
+                "updatedRows": 1,
+            }
+        }
+
+    def get_all_values(self):
+        return [list(row) for row in self.rows]
 
 
 sheet = FakeSheet()
@@ -177,6 +191,14 @@ def send_text(chat_id, text):
         content_types = filters.get("content_types")
         if content_types and "text" not in content_types:
             continue
+        commands = filters.get("commands")
+        if commands is not None:
+            # telebot only routes /cmd text to a commands= handler
+            parts = (text or "").split()
+            if not parts or not parts[0].startswith("/"):
+                continue
+            if parts[0][1:].split("@")[0].lower() not in commands:
+                continue
         func = filters.get("func")
         if func and not func(msg):
             continue
@@ -414,6 +436,146 @@ def s11():
     press(11, "expense:confirm")
     row = sheet.rows[-1]
     assert row[9] == "SI", f"expected this expense's own factura choice SI, got {row[9]}"
+
+
+@contextmanager
+def supabase_ligado(fake_request):
+    """Turns the Supabase mirror on with a stubbed HTTP layer, then restores it.
+
+    main._supabase_request is the single choke point for every Supabase call,
+    so patching it covers the mirror, the id lookups and /sync alike.
+    """
+    original = main._supabase_request
+    main.SUPABASE_URL = "https://stub.supabase.co"
+    main.SUPABASE_SERVICE_ROLE_KEY = "service-role-key"
+    main.SUPABASE_USER_ID = "user-uuid"
+    main._supabase_request = fake_request
+    main._supabase_account_ids.clear()
+    main._supabase_category_ids.clear()
+    try:
+        yield
+    finally:
+        main._supabase_request = original
+        main.SUPABASE_URL = ""
+        main.SUPABASE_SERVICE_ROLE_KEY = None
+        main.SUPABASE_USER_ID = None
+        main._supabase_account_ids.clear()
+        main._supabase_category_ids.clear()
+
+
+def _stub_lookups(path):
+    if path.startswith("accounts?"):
+        return [{"id": "acct-uuid"}]
+    if path.startswith("categories?"):
+        return [{"id": "cat-uuid"}]
+    return None
+
+
+@scenario("expense mirrors into Supabase with values mapped at the boundary")
+def s12():
+    chamadas = []
+
+    def fake_request(method, path, payload=None, prefer=None):
+        chamadas.append((method, path, payload))
+        lookup = _stub_lookups(path)
+        return lookup if lookup is not None else []
+
+    with supabase_ligado(fake_request):
+        send_text(12, "mercado fortis 150000")
+        press(12, "expense:currency:Gs")
+        press(12, "expense:banco:CONTINENTAL")
+        press(12, "expense:forma:DEBITO")
+        press(12, "expense:factura:SI")
+        press(12, "expense:confirm")
+
+    inserts = [c for c in chamadas if c[0] == "POST" and c[1] == "expenses"]
+    assert len(inserts) == 1, f"expected exactly one insert, got {len(inserts)}"
+
+    payload = inserts[0][2][0]
+    assert payload["currency"] == "PYG", f"Gs must map to PYG, got {payload['currency']}"
+    assert payload["payment_method"] == "debit_card", payload["payment_method"]
+    assert payload["has_invoice"] is True, "SI must map to boolean true"
+    assert payload["amount_pyg"] == 150000, payload["amount_pyg"]
+    assert payload["source"] == "telegram", payload["source"]
+    assert payload["external_source_id"] == f"sheet:2026:{len(sheet.rows)}", (
+        payload["external_source_id"]
+    )
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", payload["expense_date"]), payload["expense_date"]
+
+
+@scenario("EFECTIVO maps to cash and NO maps to false")
+def s13():
+    chamadas = []
+
+    def fake_request(method, path, payload=None, prefer=None):
+        chamadas.append((method, path, payload))
+        lookup = _stub_lookups(path)
+        return lookup if lookup is not None else []
+
+    with supabase_ligado(fake_request):
+        send_text(13, "feira 30000")
+        press(13, "expense:currency:Gs")
+        press(13, "expense:banco:EFECTIVO")
+        press(13, "expense:factura:NO")
+        press(13, "expense:confirm")
+
+    payload = [c for c in chamadas if c[0] == "POST" and c[1] == "expenses"][0][2][0]
+    assert payload["payment_method"] == "cash", payload["payment_method"]
+    assert payload["has_invoice"] is False, "NO must map to boolean false"
+
+
+@scenario("a Supabase outage still saves to the sheet and still confirms to the user")
+def s14():
+    linhas_antes = len(sheet.rows)
+
+    def fake_request(method, path, payload=None, prefer=None):
+        raise RuntimeError("supabase down")
+
+    with supabase_ligado(fake_request):
+        send_text(14, "cafe 25000")
+        press(14, "expense:currency:Gs")
+        press(14, "expense:banco:EFECTIVO")
+        press(14, "expense:factura:NO")
+        press(14, "expense:confirm")
+
+    assert len(sheet.rows) == linhas_antes + 1, "the sheet write must survive a Supabase outage"
+    assert "registrado" in last("edit")["text"].lower(), (
+        "user must still get the normal confirmation when only the mirror failed"
+    )
+    assert 14 not in main.pending_expenses, "pending state must still be cleared"
+
+
+@scenario("/sync sends only the sheet rows Supabase is missing")
+def s15():
+    chamadas = []
+    # Everything except the final row is already mirrored.
+    ja_existentes = [
+        {"external_source_id": f"sheet:2026:{i}"} for i in range(1, len(sheet.rows))
+    ]
+
+    def fake_request(method, path, payload=None, prefer=None):
+        chamadas.append((method, path, payload))
+        if method == "GET" and path.startswith("expenses?"):
+            return ja_existentes
+        lookup = _stub_lookups(path)
+        return lookup if lookup is not None else []
+
+    with supabase_ligado(fake_request):
+        send_text(15, "/sync")
+
+    texto = last("edit")["text"]
+    assert "Sincronização concluída" in texto, texto
+
+    enviadas = sum(
+        len(c[2]) for c in chamadas if c[0] == "POST" and c[1] == "expenses"
+    )
+    assert enviadas == 1, f"only the single missing row should be sent, got {enviadas}"
+
+
+@scenario("/sync refuses clearly when Supabase env vars are absent")
+def s16():
+    send_text(16, "/sync")
+    assert "não configurado" in last("reply")["text"], last("reply")["text"]
 
 
 print()

@@ -109,6 +109,14 @@ The Python bot expects:
 - `WEBHOOK_URL`: public base URL for the deployed bot
 - `EXCHANGE_RATE_API_URL`: optional override for the exchange rate endpoint
 
+Optional, to mirror expenses into the Supabase database behind the web dashboard.
+Leave them unset and the bot behaves exactly as before, writing only to the sheet:
+
+- `SUPABASE_URL`: project URL, e.g. `https://your-ref.supabase.co`
+- `SUPABASE_SERVICE_ROLE_KEY`: service-role key (bypasses RLS — server-side only)
+- `SUPABASE_USER_ID`: the `auth.users` UUID that owns the expenses
+- `SUPABASE_TIMEOUT`: seconds to wait per request (default `5`)
+
 Example:
 
 ```env
@@ -116,7 +124,27 @@ TELEGRAM_TOKEN=your-telegram-bot-token
 SHEET_KEY=your-google-sheet-id
 WEBHOOK_URL=https://your-render-service.onrender.com
 EXCHANGE_RATE_API_URL=https://api.frankfurter.dev/v1/latest
+SUPABASE_URL=https://your-ref.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+SUPABASE_USER_ID=your-auth-user-uuid
 ```
+
+## Supabase Mirror
+
+The Google Sheet remains the source of truth. After each row is appended, the bot
+also writes that expense to Supabase so the web dashboard has live data.
+
+Values are mapped at the boundary: `Gs` becomes `PYG`, `CREDITO`/`DEBITO`/`EFECTIVO`
+become `credit_card`/`debit_card`/`cash`, and `SI`/`NO` become a boolean.
+
+Because the sheet is append-only, each row's number is its stable identity. That
+identity is stored as `external_source_id` (`sheet:<tab>:<row>`), which makes the
+mirror idempotent.
+
+If the Supabase write fails, the failure is logged and the expense is still saved
+and confirmed normally — the sheet already has it. Send **`/sync`** to reconcile:
+it reads the sheet, skips rows already mirrored, and sends only what is missing.
+That same command performs the initial historical backfill.
 
 ## Local Secret Files
 
