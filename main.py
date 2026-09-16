@@ -7,7 +7,8 @@ from datetime import datetime
 import re
 import json
 from urllib.error import HTTPError, URLError
-from urllib.request import urlopen
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from openai import OpenAI as OpenAIClient
@@ -36,6 +37,14 @@ EXCHANGE_RATE_SPREAD = float(os.getenv("EXCHANGE_RATE_SPREAD", "1.01"))  # 1% ca
 ALLOWED_CHAT_IDS: set[int] = set(
     int(x) for x in os.getenv("ALLOWED_CHAT_IDS", "").split(",") if x.strip()
 )
+
+# Supabase (web dashboard DB). The sheet stays the source of truth; these writes
+# are a mirror, so every failure here is logged and swallowed. Absent env vars
+# disable the mirror entirely and the bot behaves exactly as before.
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_USER_ID = os.getenv("SUPABASE_USER_ID")
+SUPABASE_TIMEOUT = float(os.getenv("SUPABASE_TIMEOUT", "5"))
 
 # cria uma instancia do bot
 bot = telebot.TeleBot(TOKEN_BOT)
@@ -252,6 +261,266 @@ def parse_expense_text(mensagem):
 
 def formatar_guaranis(valor):
     return f"{valor:,.0f}".replace(",", ".")
+
+
+# --- SUPABASE (espelho da planilha para o dashboard web) ---
+# A planilha continua sendo a fonte da verdade. Tudo aqui é best-effort: falhou,
+# loga e segue, porque /sync reconcilia depois a partir da própria planilha.
+
+PAYMENT_METHOD_MAP = {
+    "CREDITO": "credit_card",
+    "DEBITO": "debit_card",
+    "EFECTIVO": "cash",
+}
+
+BANK_LABELS = dict(BANK_OPTIONS)
+
+_supabase_account_ids: dict[str, str] = {}
+_supabase_category_ids: dict[str, str] = {}
+
+
+def supabase_habilitado() -> bool:
+    return bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY and SUPABASE_USER_ID)
+
+
+def slugify(valor: str) -> str:
+    """Mirrors web/src/lib/slug.ts so bot and dashboard resolve the same slug."""
+    sem_acento = "".join(
+        c for c in unicodedata.normalize("NFD", str(valor))
+        if unicodedata.category(c) != "Mn"
+    )
+    return re.sub(r"[^a-z0-9]+", "-", sem_acento.lower().strip()).strip("-")
+
+
+def _supabase_request(method, path, payload=None, prefer=None):
+    url = f"{SUPABASE_URL}/rest/v1/{path}"
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = Request(url, data=data, method=method)
+    req.add_header("apikey", SUPABASE_SERVICE_ROLE_KEY)
+    req.add_header("Authorization", f"Bearer {SUPABASE_SERVICE_ROLE_KEY}")
+    req.add_header("Content-Type", "application/json")
+    if prefer:
+        req.add_header("Prefer", prefer)
+
+    with urlopen(req, timeout=SUPABASE_TIMEOUT) as resposta:
+        corpo = resposta.read().decode("utf-8")
+
+    return json.loads(corpo) if corpo.strip() else []
+
+
+def _resolver_account_id(banco: str) -> str:
+    slug = slugify(banco)
+    if slug in _supabase_account_ids:
+        return _supabase_account_ids[slug]
+
+    encontrados = _supabase_request(
+        "GET",
+        f"accounts?user_id=eq.{quote(SUPABASE_USER_ID)}&slug=eq.{quote(slug)}&select=id",
+    )
+    if not encontrados:
+        encontrados = _supabase_request(
+            "POST",
+            "accounts",
+            {
+                "user_id": SUPABASE_USER_ID,
+                "name": BANK_LABELS.get(banco.upper(), banco.title()),
+                "slug": slug,
+            },
+            prefer="return=representation",
+        )
+
+    _supabase_account_ids[slug] = encontrados[0]["id"]
+    return _supabase_account_ids[slug]
+
+
+def _resolver_category_id(cat: str) -> str:
+    slug = slugify(cat)
+    if slug in _supabase_category_ids:
+        return _supabase_category_ids[slug]
+
+    filtro = f"or=(user_id.is.null,user_id.eq.{quote(SUPABASE_USER_ID)})"
+    encontrados = _supabase_request(
+        "GET", f"categories?{filtro}&slug=eq.{quote(slug)}&select=id"
+    )
+    if not encontrados and slug != "uncategorized":
+        encontrados = _supabase_request(
+            "GET", f"categories?{filtro}&slug=eq.uncategorized&select=id"
+        )
+    if not encontrados:
+        raise RuntimeError("Nenhuma categoria encontrada no Supabase (nem 'uncategorized').")
+
+    _supabase_category_ids[slug] = encontrados[0]["id"]
+    return _supabase_category_ids[slug]
+
+
+def _payload_do_gasto(dados_linha, external_source_id):
+    """Maps one sheet row (10 columns, indices 0-9) to an expenses row.
+
+    This is the Gs/PYG boundary: the sheet keeps 'Gs', the web schema wants
+    'PYG'. Strips the leading quote sanitizar_celula may have added.
+    """
+    desc, valor, moeda, cotizacao, valor_final, fecha, cat, banco, forma, factura = dados_linha
+
+    def limpar(campo):
+        return str(campo).lstrip("'").strip()
+
+    dia, mes, ano = limpar(fecha).split("/")
+    moeda = limpar(moeda)
+
+    return {
+        "user_id": SUPABASE_USER_ID,
+        "description": limpar(desc),
+        "original_amount": parse_valor_brlike(limpar(valor)),
+        "currency": "PYG" if moeda == "Gs" else moeda.upper(),
+        "exchange_rate": parse_valor_brlike(limpar(cotizacao)),
+        "amount_pyg": parse_valor_brlike(limpar(valor_final)),
+        "expense_date": f"{ano}-{mes.zfill(2)}-{dia.zfill(2)}",
+        "category_id": _resolver_category_id(limpar(cat)),
+        "account_id": _resolver_account_id(limpar(banco)),
+        "payment_method": PAYMENT_METHOD_MAP.get(limpar(forma).upper(), "other"),
+        "has_invoice": limpar(factura).upper() == "SI",
+        "source": "telegram",
+        "external_source_id": external_source_id,
+    }
+
+
+def sincronizar_gasto_supabase(dados_linha, external_source_id) -> bool:
+    """Mirrors one sheet row into Supabase. Never raises.
+
+    The expense is already safe in the sheet by the time this runs, so a failure
+    must not reach the user — /sync recovers it later from the sheet itself.
+    """
+    if not supabase_habilitado():
+        return False
+
+    try:
+        _supabase_request(
+            "POST",
+            "expenses",
+            [_payload_do_gasto(dados_linha, external_source_id)],
+            prefer="return=minimal",
+        )
+        logger.info("Gasto espelhado no Supabase | %s", external_source_id)
+        return True
+    except HTTPError as e:
+        if e.code == 409:
+            logger.info("Gasto já existia no Supabase | %s", external_source_id)
+            return True
+        detalhe = e.read().decode("utf-8", "replace")[:300]
+        logger.warning(
+            "Falha ao espelhar no Supabase | %s | HTTPError %s: %s",
+            external_source_id, e.code, detalhe,
+        )
+    except Exception as e:
+        logger.warning(
+            "Falha ao espelhar no Supabase | %s | %s: %s",
+            external_source_id, type(e).__name__, e,
+        )
+    return False
+
+
+def _identificar_linha(resposta_append):
+    """Derives the external_source_id from gspread's append_row response.
+
+    The sheet is append-only, so the row number is stable identity — that is
+    what makes the mirror idempotent and /sync safe to re-run.
+    """
+    try:
+        faixa = resposta_append["updates"]["updatedRange"]
+    except (TypeError, KeyError, IndexError):
+        return None
+
+    aba, _, celulas = faixa.rpartition("!")
+    aba = aba.strip("'") or planilha.title
+    numero = re.search(r"\d+", celulas)
+    return f"sheet:{aba}:{numero.group()}" if numero else None
+
+
+def registrar_linha(dados_linha):
+    """Appends the expense to the sheet, then mirrors it into Supabase.
+
+    Every write path goes through here so the mirror can never be forgotten by
+    one of them.
+    """
+    resposta = planilha.append_row(dados_linha)
+
+    external_source_id = _identificar_linha(resposta)
+    if external_source_id:
+        sincronizar_gasto_supabase(dados_linha, external_source_id)
+    elif supabase_habilitado():
+        logger.warning(
+            "Planilha não retornou a faixa da linha; /sync fará a reconciliação."
+        )
+
+    return external_source_id
+
+
+def reconciliar_planilha(tamanho_lote=100):
+    """Sends every parseable sheet row that Supabase is missing.
+
+    Doubles as the historical backfill and as the recovery path for live writes
+    that failed, because rows are matched by external_source_id.
+    """
+    aba = planilha.title
+    valores = planilha.get_all_values()
+
+    existentes = set()
+    pagina = 0
+    while True:
+        lote = _supabase_request(
+            "GET",
+            f"expenses?user_id=eq.{quote(SUPABASE_USER_ID)}&source=eq.telegram"
+            f"&external_source_id=like.{quote(f'sheet:{aba}:%')}"
+            f"&select=external_source_id&limit=1000&offset={pagina * 1000}",
+        )
+        existentes.update(item["external_source_id"] for item in lote)
+        if len(lote) < 1000:
+            break
+        pagina += 1
+
+    pendentes = []
+    ignoradas = 0
+    primeiro_erro = None
+    for indice, linha in enumerate(valores, start=1):
+        external_source_id = f"sheet:{aba}:{indice}"
+        if external_source_id in existentes:
+            continue
+        try:
+            pendentes.append(_payload_do_gasto(linha[:10], external_source_id))
+        except Exception as e:
+            ignoradas += 1
+            if primeiro_erro is None:
+                primeiro_erro = f"linha {indice} — {type(e).__name__}: {e}"
+
+    if primeiro_erro:
+        logger.warning(
+            "Reconciliação ignorou %s linha(s). Primeira: %s", ignoradas, primeiro_erro
+        )
+
+    enviadas = 0
+    for inicio in range(0, len(pendentes), tamanho_lote):
+        lote = pendentes[inicio:inicio + tamanho_lote]
+        try:
+            _supabase_request("POST", "expenses", lote, prefer="return=minimal")
+            enviadas += len(lote)
+        except HTTPError as e:
+            # Um conflito derruba o lote inteiro; reenvia linha a linha.
+            if e.code != 409:
+                raise
+            for payload in lote:
+                try:
+                    _supabase_request("POST", "expenses", [payload], prefer="return=minimal")
+                    enviadas += 1
+                except HTTPError as individual:
+                    if individual.code != 409:
+                        raise
+
+    return {
+        "linhas": len(valores),
+        "enviadas": enviadas,
+        "existentes": len(existentes),
+        "ignoradas": ignoradas,
+    }
 
 
 def build_keyboard(options, prefix, row_width=2):
@@ -510,7 +779,7 @@ def salvar_gasto(chat_id):
         sanitizar_celula(expense["forma"]),
         sanitizar_celula(expense["factura"]),
     ]
-    planilha.append_row(dados_linha)
+    registrar_linha(dados_linha)
 
     if expense["moeda"] != "Gs":
         exchange_rates[expense["moeda"]] = expense["cotizacao"]
@@ -561,7 +830,7 @@ def processar_formato_legado(message, partes):
 
         dados_linha = [desc, valor, moeda, cotizacao, valor_final_format,
                         fecha, cat, banco, forma, factura]
-        planilha.append_row(dados_linha)
+        registrar_linha(dados_linha)
 
         user_defaults[message.chat.id] = {
             "banco": banco,
@@ -599,7 +868,7 @@ def processar_formato_legado(message, partes):
 
         dados_linha = [desc, valor, moeda, cotizacao, valor_final_format,
                         fecha, cat, banco, forma, factura]
-        planilha.append_row(dados_linha)
+        registrar_linha(dados_linha)
 
         user_defaults[message.chat.id] = {
             "banco": banco,
@@ -1116,6 +1385,48 @@ def handle_expense_callbacks(call):
     bot.answer_callback_query(call.id, "Ação não reconhecida.")
 
 # --- HANDLER 2: OUVINTE GERAL (FINANÇAS) ---
+@bot.message_handler(commands=['sync'])
+def handle_sync(message):
+    chat_id = message.chat.id
+
+    if not is_allowed(chat_id):
+        return
+
+    if not supabase_habilitado():
+        bot.reply_to(
+            message,
+            "❌ Supabase não configurado. Defina SUPABASE_URL, "
+            "SUPABASE_SERVICE_ROLE_KEY e SUPABASE_USER_ID.",
+        )
+        return
+
+    aviso = bot.reply_to(message, "🔄 Sincronizando a planilha com o Supabase...")
+
+    try:
+        resultado = reconciliar_planilha()
+    except Exception as e:
+        logger.exception("Falha na reconciliação com o Supabase")
+        bot.edit_message_text(
+            f"❌ Falha na sincronização: {type(e).__name__}: {e}",
+            chat_id=chat_id,
+            message_id=aviso.message_id,
+        )
+        return
+
+    logger.info("Reconciliação concluída | %s", resultado)
+
+    bot.edit_message_text(
+        "✅ *Sincronização concluída!*\n\n"
+        f"📄 *Linhas na planilha:* {resultado['linhas']}\n"
+        f"➕ *Enviadas agora:* {resultado['enviadas']}\n"
+        f"🧾 *Já no Supabase:* {resultado['existentes']}\n"
+        f"⚠️ *Ignoradas:* {resultado['ignoradas']}",
+        chat_id=chat_id,
+        message_id=aviso.message_id,
+        parse_mode="Markdown",
+    )
+
+
 @bot.message_handler(func=lambda message: True)
 def processar_gastos(message):
     if not is_allowed(message.chat.id):
