@@ -632,6 +632,39 @@ def s17():
     )
 
 
+@scenario("legacy R$ currency maps to BRL (regression: historical rows failed the currency CHECK constraint)")
+def s18():
+    # Historical sheet rows predate CURRENCY_OPTIONS and used the raw symbol; the
+    # guided flow's buttons only ever produce Gs/USD/BRL/ARS, so this can only be
+    # exercised by injecting a raw row, not by driving the bot's UI.
+    sheet.rows.append([
+        "AGUA DE COCO", "28.00", "R$", "1226", "34328", "28/12/2025",
+        "ALIMENTACAO", "CONTINENTAL", "CREDITO", "NO",
+    ])
+    id_linha = f"sheet:2026:{len(sheet.rows)}"
+
+    def fake_request(method, path, payload=None, prefer=None):
+        if method == "GET" and path.startswith("expenses?"):
+            return []
+        lookup = _stub_lookups(path)
+        return lookup if lookup is not None else []
+
+    calls = []
+    def recording_fake_request(method, path, payload=None, prefer=None):
+        calls.append((method, path, payload))
+        return fake_request(method, path, payload, prefer)
+
+    with supabase_ligado(recording_fake_request):
+        send_text(20, "/sync")
+
+    enviados = [
+        p for _, path, batch in calls if path == "expenses" and batch
+        for p in batch if p["external_source_id"] == id_linha
+    ]
+    assert enviados, f"row {id_linha} was never sent to Supabase"
+    assert enviados[0]["currency"] == "BRL", f"R$ must map to BRL, got {enviados[0]['currency']}"
+
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} scenario(s) FAILED: {', '.join(FAILURES)}")

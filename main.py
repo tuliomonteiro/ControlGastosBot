@@ -273,6 +273,17 @@ PAYMENT_METHOD_MAP = {
     "EFECTIVO": "cash",
 }
 
+# The schema's currency column requires exactly 3 uppercase chars. CURRENCY_OPTIONS
+# only ever writes Gs/USD/BRL/ARS today, but older sheet rows predate that and used
+# raw symbols instead — extend this as /sync surfaces more (it reports the exact
+# offending value instead of failing silently, so new aliases are easy to spot).
+CURRENCY_ALIASES = {
+    "GS": "PYG",
+    "R$": "BRL",
+    "US$": "USD",
+    "U$": "USD",
+}
+
 BANK_LABELS = dict(BANK_OPTIONS)
 
 _supabase_account_ids: dict[str, str] = {}
@@ -365,13 +376,13 @@ def _payload_do_gasto(dados_linha, external_source_id):
         return str(campo).lstrip("'").strip()
 
     dia, mes, ano = limpar(fecha).split("/")
-    moeda = limpar(moeda)
+    moeda = limpar(moeda).upper()
 
     return {
         "user_id": SUPABASE_USER_ID,
         "description": limpar(desc),
         "original_amount": parse_valor_brlike(limpar(valor)),
-        "currency": "PYG" if moeda == "Gs" else moeda.upper(),
+        "currency": CURRENCY_ALIASES.get(moeda, moeda),
         "exchange_rate": parse_valor_brlike(limpar(cotizacao)),
         "amount_pyg": parse_valor_brlike(limpar(valor_final)),
         "expense_date": f"{ano}-{mes.zfill(2)}-{dia.zfill(2)}",
