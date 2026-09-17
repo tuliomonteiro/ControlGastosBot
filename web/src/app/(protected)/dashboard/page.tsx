@@ -1,4 +1,5 @@
 import { requireAllowedUser } from "@/lib/auth";
+import { getHouseholdUserId } from "@/lib/household";
 import {
   formatGuaraniAmount,
   listAccounts,
@@ -23,19 +24,20 @@ type DashboardPageProps = {
 };
 
 export default async function DashboardPage({ searchParams }: DashboardPageProps) {
-  const user = await requireAllowedUser("/dashboard");
+  await requireAllowedUser("/dashboard");
+  const householdUserId = getHouseholdUserId();
   const params = await searchParams;
   const range = resolveRange(params);
 
   const [expenses, categories, accounts] = await Promise.all([
-    listExpensesInRange(user.id, {
+    listExpensesInRange(householdUserId, {
       from: range.from,
       to: range.to,
       categoryId: params.category,
       accountId: params.account,
     }),
-    listCategories(user.id),
-    listAccounts(user.id),
+    listCategories(householdUserId),
+    listAccounts(householdUserId),
   ]);
 
   const totalSpend = sumAmount(expenses);

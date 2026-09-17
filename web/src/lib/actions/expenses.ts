@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { requireAllowedUser } from "@/lib/auth";
+import { getHouseholdUserId } from "@/lib/household";
 import {
   createAccount,
   createCategory,
@@ -31,35 +32,35 @@ function isPaymentMethod(value: string): value is PaymentMethod {
 }
 
 export async function createAccountAction(formData: FormData) {
-  const user = await requireAllowedUser("/settings/integrations");
+  await requireAllowedUser("/settings/integrations");
   const name = getString(formData, "name");
 
   if (!name) {
     throw new Error("Account name is required.");
   }
 
-  await createAccount(user.id, name);
+  await createAccount(getHouseholdUserId(), name);
   revalidatePath("/settings/integrations");
   revalidatePath("/dashboard");
   revalidatePath("/expenses");
 }
 
 export async function createCategoryAction(formData: FormData) {
-  const user = await requireAllowedUser("/settings/integrations");
+  await requireAllowedUser("/settings/integrations");
   const name = getString(formData, "name");
 
   if (!name) {
     throw new Error("Category name is required.");
   }
 
-  await createCategory(user.id, name);
+  await createCategory(getHouseholdUserId(), name);
   revalidatePath("/settings/integrations");
   revalidatePath("/dashboard");
   revalidatePath("/expenses");
 }
 
 export async function createExpenseAction(formData: FormData) {
-  const user = await requireAllowedUser("/expenses");
+  await requireAllowedUser("/expenses");
   const description = getString(formData, "description");
   const originalAmount = Number(getString(formData, "original_amount"));
   const currency = (getString(formData, "currency") || "PYG").toUpperCase();
@@ -91,7 +92,7 @@ export async function createExpenseAction(formData: FormData) {
   const amountPyg = currency === "PYG" ? originalAmount : originalAmount * exchangeRate;
 
   await createExpense({
-    userId: user.id,
+    userId: getHouseholdUserId(),
     description,
     originalAmount,
     currency,
@@ -111,7 +112,7 @@ export async function createExpenseAction(formData: FormData) {
 }
 
 export async function saveTelegramConnectionAction(formData: FormData) {
-  const user = await requireAllowedUser("/settings/integrations");
+  await requireAllowedUser("/settings/integrations");
   const telegramChatId = getString(formData, "telegram_chat_id");
   const telegramUserId = getString(formData, "telegram_user_id") || null;
 
@@ -119,7 +120,7 @@ export async function saveTelegramConnectionAction(formData: FormData) {
     throw new Error("Telegram chat ID is required.");
   }
 
-  await upsertTelegramConnection(user.id, telegramChatId, telegramUserId);
+  await upsertTelegramConnection(getHouseholdUserId(), telegramChatId, telegramUserId);
   revalidatePath("/settings/integrations");
   revalidatePath("/dashboard");
 }

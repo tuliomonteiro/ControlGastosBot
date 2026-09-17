@@ -1,4 +1,5 @@
 import { requireAllowedUser } from "@/lib/auth";
+import { getHouseholdUserId } from "@/lib/household";
 import {
   createAccountAction,
   createCategoryAction,
@@ -11,11 +12,12 @@ import {
 } from "@/lib/data/expenses";
 
 export default async function IntegrationsPage() {
-  const user = await requireAllowedUser("/settings/integrations");
+  await requireAllowedUser("/settings/integrations");
+  const householdUserId = getHouseholdUserId();
   const [accounts, categories, telegramConnections] = await Promise.all([
-    listAccounts(user.id),
-    listCategories(user.id),
-    listTelegramConnections(user.id),
+    listAccounts(householdUserId),
+    listCategories(householdUserId),
+    listTelegramConnections(householdUserId),
   ]);
 
   return (

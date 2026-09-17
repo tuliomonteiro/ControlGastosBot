@@ -146,6 +146,16 @@ dict) shadows the builtin; it's everywhere, leave the name alone.
 - Server components + server actions; no client-side data fetching, no UI library.
 - Every protected page and every server action starts with
   `await requireAllowedUser(path)`. No exceptions.
+- **The app is single-tenant in data terms, multi-user in auth terms.**
+  `requireAllowedUser` answers "is this person allowed to use the app at all"
+  (gated by `ALLOWED_EMAILS`) — it does NOT answer "whose data should this page
+  show." Every data-scoping call uses `getHouseholdUserId()`
+  (`lib/household.ts`, reads `SUPABASE_USER_ID` — same value as the bot's env
+  var of the same name) instead of the logged-in user's own `user.id`. Multiple
+  people (see `household_members` table, `supabase/migrations/20260917190000_household_sharing.sql`)
+  can log in and all read/write the same household's rows; nobody gets their
+  own separate empty tenant. Never scope a query or a write with `user.id` from
+  `requireAllowedUser` — that's an identity, not the household owner.
 - Supabase clients: `lib/supabase/server.ts` (anon, RLS-bound) for user-facing
   code; `lib/supabase/service-role.ts` (bypasses RLS) ONLY inside
   `/api/telegram/webhook`. Never leak the service-role client elsewhere.
@@ -172,6 +182,7 @@ dict) shadows the builtin; it's everywhere, leave the name alone.
 | 6 | `except: pass` or generic error text | Log with `logger.exception`/`warning`; user-facing errors include `type(e).__name__`. |
 | 7 | Feature that stores state across restarts in `pending_expenses`/`user_defaults` | RAM only. If durable state is needed, say so and propose Supabase — don't fake it. |
 | 8 | Editing `web/src/lib/database.types.ts` by hand | Generated file; change the migration and regenerate. |
+| 8b | Scoping a web query/write with `requireAllowedUser`'s `user.id` | Use `getHouseholdUserId()` instead — auth identity and data ownership are deliberately decoupled. |
 | 9 | `edit_message_text` on a user's message | Only bot messages are editable; `reply_to` then edit that. |
 | 10 | English strings in bot replies | PT-BR with the established emoji per field. |
 | 11 | Assuming a rate API supports PYG | curl the endpoint and check `rates.PYG` exists before adopting it. |
