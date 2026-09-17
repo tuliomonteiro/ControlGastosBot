@@ -157,6 +157,80 @@ export async function listRecentExpenses(userId: string, limit = 10) {
   return data as ExpenseWithRelations[];
 }
 
+export type DashboardFilters = {
+  from?: string; // YYYY-MM-DD, inclusive
+  to?: string; // YYYY-MM-DD, inclusive
+  categoryId?: string;
+  accountId?: string;
+};
+
+const ANALYTICS_PAGE_SIZE = 1000;
+
+export async function listExpensesInRange(
+  userId: string,
+  filters: DashboardFilters = {},
+): Promise<ExpenseWithRelations[]> {
+  const supabase = await getServerClient();
+  const results: ExpenseWithRelations[] = [];
+  let offset = 0;
+
+  // PostgREST caps a single response at 1000 rows by default. Paginate instead
+  // of trusting a one-shot fetch, so a growing history never gets silently
+  // truncated once it crosses that line.
+  while (true) {
+    let query = supabase
+      .from("expenses")
+      .select(
+        `
+          id,
+          user_id,
+          description,
+          original_amount,
+          currency,
+          exchange_rate,
+          amount_pyg,
+          expense_date,
+          category_id,
+          account_id,
+          payment_method,
+          has_invoice,
+          source,
+          source_text,
+          source_payload,
+          external_source_id,
+          notes,
+          created_at,
+          updated_at,
+          account:accounts(id, name, slug),
+          category:categories(id, name, slug)
+        `,
+      )
+      .eq("user_id", userId)
+      .order("expense_date", { ascending: true })
+      .range(offset, offset + ANALYTICS_PAGE_SIZE - 1);
+
+    if (filters.from) query = query.gte("expense_date", filters.from);
+    if (filters.to) query = query.lte("expense_date", filters.to);
+    if (filters.categoryId) query = query.eq("category_id", filters.categoryId);
+    if (filters.accountId) query = query.eq("account_id", filters.accountId);
+
+    const { data, error } = await query;
+
+    if (error) {
+      throw new Error(`Failed to load expenses for analytics: ${error.message}`);
+    }
+
+    results.push(...(data as ExpenseWithRelations[]));
+
+    if (data.length < ANALYTICS_PAGE_SIZE) {
+      break;
+    }
+    offset += ANALYTICS_PAGE_SIZE;
+  }
+
+  return results;
+}
+
 export async function createAccount(userId: string, name: string) {
   const supabase = await getServerClient();
   const { data, error } = await supabase
@@ -295,70 +369,4 @@ export async function upsertTelegramConnection(
   return data satisfies TelegramConnection;
 }
 
-export async function getExpenseCount(userId: string) {
-  const supabase = await getServerClient();
-  const { count, error } = await supabase
-    .from("expenses")
-    .select("id", { count: "exact", head: true })
-    .eq("user_id", userId);
-
-  if (error) {
-    throw new Error(`Failed to count expenses: ${error.message}`);
-  }
-
-  return count ?? 0;
-}
-
-export async function getCurrentMonthSpendPyg(userId: string) {
-  const now = new Date();
-  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
-    .toISOString()
-    .slice(0, 10);
-
-  const supabase = await getServerClient();
-  const { data, error } = await supabase
-    .from("expenses")
-    .select("amount_pyg")
-    .eq("user_id", userId)
-    .gte("expense_date", monthStart);
-
-  if (error) {
-    throw new Error(`Failed to load monthly spend: ${error.message}`);
-  }
-
-  return data.reduce((sum, expense) => sum + expense.amount_pyg, 0);
-}
-
-export async function getDashboardSnapshot(userId: string) {
-  const [
-    expenseCount,
-    monthSpendPyg,
-    recentExpenses,
-    accounts,
-    categories,
-    telegramConnections,
-  ] =
-    await Promise.all([
-      getExpenseCount(userId),
-      getCurrentMonthSpendPyg(userId),
-      listRecentExpenses(userId, 5),
-      listAccounts(userId),
-      listCategories(userId),
-      listTelegramConnections(userId),
-    ]);
-
-  return {
-    expenseCount,
-    monthSpendPyg,
-    recentExpenses,
-    accounts,
-    categories,
-    telegramConnections,
-  };
-}
-
-export function formatGuaraniAmount(value: number) {
-  return new Intl.NumberFormat("es-PY", {
-    maximumFractionDigits: 0,
-  }).format(value);
-}
+export { formatGuaraniAmount } from "@/lib/format";

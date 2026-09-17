@@ -1,0 +1,202 @@
+.root {
+  --chart-surface: #fffbf4;
+  --chart-grid: rgba(29, 34, 28, 0.12);
+  --chart-text-primary: #1d221c;
+  --chart-text-secondary: rgba(29, 34, 28, 0.64);
+  --chart-series: #2a78d6;
+  --chart-series-strong: #1c5cab;
+  --chart-series-wash: rgba(42, 120, 214, 0.1);
+  display: grid;
+  gap: 20px;
+}
+
+/* Filters */
+
+.filters {
+  display: grid;
+  gap: 12px;
+  border: 1px solid rgba(78, 58, 27, 0.12);
+  border-radius: 20px;
+  background: rgba(255, 251, 244, 0.9);
+  box-shadow: 0 12px 30px rgba(93, 71, 33, 0.06);
+  padding: 16px 20px;
+}
+
+.filters[data-loading] {
+  opacity: 0.7;
+}
+
+.filterRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.presetGroup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.presetButton {
+  border: 1px solid rgba(78, 58, 27, 0.16);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--chart-text-primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 7px 14px;
+  cursor: pointer;
+}
+
+.presetButton:hover {
+  background: rgba(122, 91, 43, 0.08);
+}
+
+.presetButton[data-active] {
+  background: #1d221c;
+  border-color: #1d221c;
+  color: #fff;
+}
+
+.selectGroup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.selectGroup select {
+  border: 1px solid rgba(78, 58, 27, 0.16);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--chart-text-primary);
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 10px;
+}
+
+.customRange {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  border-top: 1px solid rgba(78, 58, 27, 0.1);
+  padding-top: 12px;
+}
+
+.customRange label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--chart-text-secondary);
+}
+
+.customRange input {
+  border: 1px solid rgba(78, 58, 27, 0.16);
+  border-radius: 10px;
+  padding: 6px 8px;
+  font: inherit;
+}
+
+.applyButton {
+  border: 0;
+  border-radius: 999px;
+  background: #1d221c;
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  font-size: 13px;
+  padding: 8px 16px;
+  cursor: pointer;
+  height: fit-content;
+}
+
+/* KPI row */
+
+.kpiRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.kpiTile {
+  border: 1px solid rgba(78, 58, 27, 0.12);
+  border-radius: 18px;
+  background: rgba(255, 251, 244, 0.9);
+  box-shadow: 0 12px 30px rgba(93, 71, 33, 0.06);
+  padding: 16px 18px;
+  display: grid;
+  gap: 6px;
+}
+
+.kpiLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--chart-text-secondary);
+}
+
+.kpiValue {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--chart-text-primary);
+  font-variant-numeric: proportional-nums;
+}
+
+/* Chart cards */
+
+.chartGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 16px;
+}
+
+.card {
+  border: 1px solid rgba(78, 58, 27, 0.12);
+  border-radius: 20px;
+  background: var(--chart-surface);
+  box-shadow: 0 12px 30px rgba(93, 71, 33, 0.06);
+  padding: 20px 22px;
+}
+
+.cardTitle {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--chart-text-primary);
+  margin-bottom: 2px;
+}
+
+.cardSubtitle {
+  font-size: 12px;
+  color: var(--chart-text-secondary);
+  margin-bottom: 12px;
+}
+
+.emptyState {
+  color: var(--chart-text-secondary);
+  font-size: 13px;
+  padding: 24px 0;
+  text-align: center;
+}
+
+.tooltip {
+  background: #fff;
+  border: 1px solid rgba(78, 58, 27, 0.16);
+  border-radius: 10px;
+  padding: 8px 12px;
+  box-shadow: 0 8px 20px rgba(93, 71, 33, 0.12);
+  font-size: 13px;
+}
+
+.tooltipLabel {
+  color: var(--chart-text-secondary);
+  margin-bottom: 4px;
+}
+
+.tooltipValue {
+  color: var(--chart-text-primary);
+  font-weight: 700;
+}

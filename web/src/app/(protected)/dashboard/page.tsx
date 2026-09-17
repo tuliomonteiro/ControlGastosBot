@@ -1,50 +1,141 @@
 import { requireAllowedUser } from "@/lib/auth";
 import {
   formatGuaraniAmount,
-  getDashboardSnapshot,
+  listAccounts,
+  listCategories,
+  listExpensesInRange,
 } from "@/lib/data/expenses";
+import { aggregateByAccount, aggregateByCategory, aggregateByMonth, sumAmount } from "@/lib/analytics";
+import { resolveRange } from "@/lib/dashboard-filters";
+import { DashboardFilters } from "@/components/dashboard/filters";
+import { TrendChart } from "@/components/dashboard/trend-chart";
+import { RankedBarChart } from "@/components/dashboard/ranked-bar-chart";
+import styles from "@/components/dashboard/dashboard.module.css";
 
-export default async function DashboardPage() {
+type DashboardPageProps = {
+  searchParams: Promise<{
+    range?: string;
+    from?: string;
+    to?: string;
+    category?: string;
+    account?: string;
+  }>;
+};
+
+export default async function DashboardPage({ searchParams }: DashboardPageProps) {
   const user = await requireAllowedUser("/dashboard");
-  const snapshot = await getDashboardSnapshot(user.id);
+  const params = await searchParams;
+  const range = resolveRange(params);
+
+  const [expenses, categories, accounts] = await Promise.all([
+    listExpensesInRange(user.id, {
+      from: range.from,
+      to: range.to,
+      categoryId: params.category,
+      accountId: params.account,
+    }),
+    listCategories(user.id),
+    listAccounts(user.id),
+  ]);
+
+  const totalSpend = sumAmount(expenses);
+  const activeCategories = new Set(expenses.map((expense) => expense.category?.id).filter(Boolean)).size;
+  const trend = aggregateByMonth(expenses);
+  const byCategory = aggregateByCategory(expenses);
+  const byAccount = aggregateByAccount(expenses);
+  const recent = expenses.slice(-8).reverse();
 
   return (
-    <>
-      <h1>Dashboard</h1>
-      <p>Authenticated overview backed by Supabase.</p>
+    <div className={styles.root}>
+      <div>
+        <h1>Dashboard</h1>
+        <p>Visão geral dos seus gastos, direto do Supabase.</p>
+      </div>
 
-      <div style={{ display: "grid", gap: "12px", marginTop: "24px" }}>
-        <div>
-          <strong>Total expenses:</strong> {snapshot.expenseCount}
+      <DashboardFilters
+        categories={categories}
+        accounts={accounts}
+        currentRange={range.key}
+        currentFrom={params.from}
+        currentTo={params.to}
+        currentCategoryId={params.category}
+        currentAccountId={params.account}
+      />
+
+      <div className={styles.kpiRow}>
+        <div className={styles.kpiTile}>
+          <span className={styles.kpiLabel}>Total de gastos</span>
+          <span className={styles.kpiValue}>{expenses.length}</span>
         </div>
-        <div>
-          <strong>Current month spend:</strong> Gs.{" "}
-          {formatGuaraniAmount(snapshot.monthSpendPyg)}
+        <div className={styles.kpiTile}>
+          <span className={styles.kpiLabel}>Total gasto</span>
+          <span className={styles.kpiValue}>Gs. {formatGuaraniAmount(totalSpend)}</span>
         </div>
-        <div>
-          <strong>Accounts configured:</strong> {snapshot.accounts.length}
+        <div className={styles.kpiTile}>
+          <span className={styles.kpiLabel}>Média por gasto</span>
+          <span className={styles.kpiValue}>
+            Gs. {formatGuaraniAmount(expenses.length ? totalSpend / expenses.length : 0)}
+          </span>
         </div>
-        <div>
-          <strong>Categories available:</strong> {snapshot.categories.length}
+        <div className={styles.kpiTile}>
+          <span className={styles.kpiLabel}>Categorias ativas</span>
+          <span className={styles.kpiValue}>{activeCategories}</span>
         </div>
       </div>
 
-      <section style={{ marginTop: "32px" }}>
-        <h2>Recent expenses</h2>
-        {snapshot.recentExpenses.length === 0 ? (
-          <p>No expenses yet. The database connection is working, but there is no data.</p>
+      <div className={styles.chartGrid}>
+        <div className={styles.card}>
+          <div className={styles.cardTitle}>Gastos ao longo do tempo</div>
+          <div className={styles.cardSubtitle}>Total mensal, no período filtrado</div>
+          <TrendChart data={trend} />
+        </div>
+
+        <div className={styles.card}>
+          <div className={styles.cardTitle}>Gastos por categoria</div>
+          <div className={styles.cardSubtitle}>Maiores categorias no período filtrado</div>
+          <RankedBarChart data={byCategory} />
+        </div>
+
+        <div className={styles.card}>
+          <div className={styles.cardTitle}>Gastos por conta</div>
+          <div className={styles.cardSubtitle}>Maiores contas/bancos no período filtrado</div>
+          <RankedBarChart data={byAccount} />
+        </div>
+      </div>
+
+      <section className={styles.card}>
+        <div className={styles.cardTitle}>Gastos recentes</div>
+        {recent.length === 0 ? (
+          <p className={styles.emptyState}>Nenhum gasto no período selecionado.</p>
         ) : (
-          <ul style={{ marginTop: "16px", paddingLeft: "20px" }}>
-            {snapshot.recentExpenses.map((expense) => (
-              <li key={expense.id} style={{ marginBottom: "10px" }}>
-                {expense.description} | Gs. {formatGuaraniAmount(expense.amount_pyg)} |{" "}
-                {expense.category?.name ?? "No category"} |{" "}
-                {expense.account?.name ?? "No account"} | {expense.expense_date}
-              </li>
-            ))}
-          </ul>
+          <div style={{ marginTop: "12px", overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <th align="left">Data</th>
+                  <th align="left">Descrição</th>
+                  <th align="left">Categoria</th>
+                  <th align="left">Conta</th>
+                  <th align="right">Valor (Gs)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recent.map((expense) => (
+                  <tr key={expense.id}>
+                    <td style={{ paddingTop: "10px" }}>{expense.expense_date}</td>
+                    <td style={{ paddingTop: "10px" }}>{expense.description}</td>
+                    <td style={{ paddingTop: "10px" }}>{expense.category?.name ?? "Sem categoria"}</td>
+                    <td style={{ paddingTop: "10px" }}>{expense.account?.name ?? "Sem conta"}</td>
+                    <td align="right" style={{ paddingTop: "10px" }}>
+                      {formatGuaraniAmount(expense.amount_pyg)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
-    </>
+    </div>
   );
 }
