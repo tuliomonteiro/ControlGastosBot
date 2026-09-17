@@ -8,6 +8,7 @@
   --chart-series-wash: rgba(42, 120, 214, 0.1);
   display: grid;
   gap: 20px;
+  min-width: 0;
 }
 
 /* Filters */
@@ -119,7 +120,7 @@
 
 .kpiRow {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr));
   gap: 12px;
 }
 
@@ -150,8 +151,9 @@
 
 .chartGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr));
   gap: 16px;
+  min-width: 0;
 }
 
 .card {
@@ -160,6 +162,7 @@
   background: var(--chart-surface);
   box-shadow: 0 12px 30px rgba(93, 71, 33, 0.06);
   padding: 20px 22px;
+  min-width: 0;
 }
 
 .cardTitle {
