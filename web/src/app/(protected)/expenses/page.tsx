@@ -1,4 +1,5 @@
 import { requireAllowedUser } from "@/lib/auth";
+import { getHouseholdUserId } from "@/lib/household";
 import { createExpenseAction } from "@/lib/actions/expenses";
 import {
   formatGuaraniAmount,
@@ -8,11 +9,12 @@ import {
 } from "@/lib/data/expenses";
 
 export default async function ExpensesPage() {
-  const user = await requireAllowedUser("/expenses");
+  await requireAllowedUser("/expenses");
+  const householdUserId = getHouseholdUserId();
   const [expenses, accounts, categories] = await Promise.all([
-    listRecentExpenses(user.id, 25),
-    listAccounts(user.id),
-    listCategories(user.id),
+    listRecentExpenses(householdUserId, 25),
+    listAccounts(householdUserId),
+    listCategories(householdUserId),
   ]);
 
   return (

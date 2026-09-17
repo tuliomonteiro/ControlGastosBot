@@ -155,6 +155,21 @@ export type Database = {
           },
         ]
       }
+      household_members: {
+        Row: {
+          created_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       sheet_sync_runs: {
         Row: {
           created_at: string
@@ -229,7 +244,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      is_household_member: {
+        Args: never
+        Returns: boolean
+      }
     }
     Enums: {
       expense_source: "manual" | "telegram" | "import"
