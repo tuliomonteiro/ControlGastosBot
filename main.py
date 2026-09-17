@@ -498,28 +498,40 @@ def reconciliar_planilha(tamanho_lote=100):
         )
 
     enviadas = 0
+    falhas = 0
+    primeiro_erro_envio = None
     for inicio in range(0, len(pendentes), tamanho_lote):
         lote = pendentes[inicio:inicio + tamanho_lote]
         try:
             _supabase_request("POST", "expenses", lote, prefer="return=minimal")
             enviadas += len(lote)
-        except HTTPError as e:
-            # Um conflito derruba o lote inteiro; reenvia linha a linha.
-            if e.code != 409:
-                raise
-            for payload in lote:
-                try:
-                    _supabase_request("POST", "expenses", [payload], prefer="return=minimal")
-                    enviadas += 1
-                except HTTPError as individual:
-                    if individual.code != 409:
-                        raise
+            continue
+        except HTTPError:
+            pass  # um erro qualquer derruba o lote inteiro; isola linha a linha abaixo.
+
+        for payload in lote:
+            try:
+                _supabase_request("POST", "expenses", [payload], prefer="return=minimal")
+                enviadas += 1
+            except HTTPError as individual:
+                if individual.code == 409:
+                    continue  # já existia — não é falha, é o caminho idempotente normal.
+                falhas += 1
+                detalhe = individual.read().decode("utf-8", "replace")[:300]
+                mensagem = (
+                    f"{payload['external_source_id']} — HTTP {individual.code}: {detalhe}"
+                )
+                logger.warning("Falha ao enviar linha na reconciliação | %s", mensagem)
+                if primeiro_erro_envio is None:
+                    primeiro_erro_envio = mensagem
 
     return {
         "linhas": len(valores),
         "enviadas": enviadas,
         "existentes": len(existentes),
         "ignoradas": ignoradas,
+        "falhas": falhas,
+        "primeiro_erro_envio": primeiro_erro_envio,
     }
 
 
@@ -1415,12 +1427,21 @@ def handle_sync(message):
 
     logger.info("Reconciliação concluída | %s", resultado)
 
-    bot.edit_message_text(
+    resumo = (
         "✅ *Sincronização concluída!*\n\n"
         f"📄 *Linhas na planilha:* {resultado['linhas']}\n"
         f"➕ *Enviadas agora:* {resultado['enviadas']}\n"
         f"🧾 *Já no Supabase:* {resultado['existentes']}\n"
-        f"⚠️ *Ignoradas:* {resultado['ignoradas']}",
+        f"⚠️ *Ignoradas (não deu para interpretar):* {resultado['ignoradas']}\n"
+        f"❌ *Falharam ao enviar:* {resultado['falhas']}"
+    )
+    if resultado["primeiro_erro_envio"]:
+        # Detalhe cru do Supabase pode conter _ * ` e quebrar o parse Markdown.
+        detalhe_seguro = re.sub(r"[_*`\[\]]", " ", resultado["primeiro_erro_envio"])
+        resumo += f"\n\nPrimeiro erro: `{detalhe_seguro[:300]}`"
+
+    bot.edit_message_text(
+        resumo,
         chat_id=chat_id,
         message_id=aviso.message_id,
         parse_mode="Markdown",

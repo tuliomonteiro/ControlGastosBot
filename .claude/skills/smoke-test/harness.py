@@ -9,10 +9,12 @@ through the expense flows. Run from the repo root:
 Exit code 0 = all scenarios passed. Any assertion failure prints the scenario
 name and the bot's message log for that chat.
 """
+import io
 import os
 import re
 import sys
 import types as pytypes
+import urllib.error
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -576,6 +578,58 @@ def s15():
 def s16():
     send_text(16, "/sync")
     assert "não configurado" in last("reply")["text"], last("reply")["text"]
+
+
+@scenario("/sync isolates a bad row instead of losing the whole batch to one 400 (regression)")
+def s17():
+    # Two ordinary rows land in the sheet with the mirror off — exactly what a
+    # pre-Supabase row looks like, which is what /sync exists to backfill.
+    send_text(17, "sync ok 10000")
+    press(17, "expense:currency:Gs")
+    press(17, "expense:banco:EFECTIVO")
+    press(17, "expense:factura:NO")
+    press(17, "expense:confirm")
+    linha_boa = len(sheet.rows)
+
+    send_text(17, "sync ruim 20000")
+    press(17, "expense:currency:Gs")
+    press(17, "expense:banco:EFECTIVO")
+    press(17, "expense:factura:NO")
+    press(17, "expense:confirm")
+    linha_ruim = len(sheet.rows)
+
+    id_boa = f"sheet:2026:{linha_boa}"
+    id_ruim = f"sheet:2026:{linha_ruim}"
+
+    def falhar_linha_ruim(*_a, **_k):
+        return urllib.error.HTTPError(
+            "https://stub.supabase.co/rest/v1/expenses",
+            400,
+            "Bad Request",
+            {},
+            io.BytesIO(b'{"message":"invalid input syntax for type date"}'),
+        )
+
+    def fake_request(method, path, payload=None, prefer=None):
+        if method == "GET" and path.startswith("expenses?"):
+            return []  # nothing mirrored yet — both rows are pending
+        lookup = _stub_lookups(path)
+        if lookup is not None:
+            return lookup
+        ids = [p["external_source_id"] for p in payload]
+        if id_ruim in ids:
+            raise falhar_linha_ruim()
+        return []
+
+    with supabase_ligado(fake_request):
+        send_text(19, "/sync")
+
+    texto = last("edit")["text"]
+    assert "Enviadas agora:* 1" in texto, texto
+    assert "Falharam ao enviar:* 1" in texto, texto
+    assert "invalid input syntax" in texto, (
+        "the real Supabase error body must reach the summary, not just 'Bad Request'"
+    )
 
 
 print()
