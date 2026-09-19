@@ -75,3 +75,17 @@ function rankBy<T extends { amount_pyg: number }>(
 export function sumAmount(expenses: Pick<ExpenseWithRelations, "amount_pyg">[]): number {
   return expenses.reduce((sum, expense) => sum + expense.amount_pyg, 0);
 }
+
+export function aggregateFacturaByMonth(
+  expenses: Pick<ExpenseWithRelations, "expense_date" | "amount_pyg" | "has_invoice">[],
+): RankedSlice[] {
+  const withInvoice = expenses.filter((expense) => expense.has_invoice);
+
+  // Reuses the same month buckets as the trend chart, but renders as ranked
+  // horizontal bars (most recent month first) rather than a left-to-right
+  // timeline, so it's reversed instead of re-sorted by magnitude.
+  return aggregateByMonth(withInvoice)
+    .slice()
+    .reverse()
+    .map(({ label, total }) => ({ label, total }));
+}
