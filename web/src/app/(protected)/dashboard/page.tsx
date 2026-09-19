@@ -6,7 +6,13 @@ import {
   listCategories,
   listExpensesInRange,
 } from "@/lib/data/expenses";
-import { aggregateByAccount, aggregateByCategory, aggregateByMonth, sumAmount } from "@/lib/analytics";
+import {
+  aggregateByAccount,
+  aggregateByCategory,
+  aggregateByMonth,
+  aggregateFacturaByMonth,
+  sumAmount,
+} from "@/lib/analytics";
 import { resolveRange } from "@/lib/dashboard-filters";
 import { DashboardFilters } from "@/components/dashboard/filters";
 import { TrendChart } from "@/components/dashboard/trend-chart";
@@ -45,6 +51,8 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
   const trend = aggregateByMonth(expenses);
   const byCategory = aggregateByCategory(expenses);
   const byAccount = aggregateByAccount(expenses);
+  const byMonthWithInvoice = aggregateFacturaByMonth(expenses);
+  const totalWithInvoice = sumAmount(expenses.filter((expense) => expense.has_invoice));
   const recent = expenses.slice(-8).reverse();
 
   return (
@@ -83,6 +91,10 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
           <span className={styles.kpiLabel}>Categorias ativas</span>
           <span className={styles.kpiValue}>{activeCategories}</span>
         </div>
+        <div className={styles.kpiTile}>
+          <span className={styles.kpiLabel}>Total com factura</span>
+          <span className={styles.kpiValue}>Gs. {formatGuaraniAmount(totalWithInvoice)}</span>
+        </div>
       </div>
 
       <div className={styles.chartGrid}>
@@ -102,6 +114,12 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
           <div className={styles.cardTitle}>Gastos por conta</div>
           <div className={styles.cardSubtitle}>Maiores contas/bancos no período filtrado</div>
           <RankedBarChart data={byAccount} />
+        </div>
+
+        <div className={styles.card}>
+          <div className={styles.cardTitle}>Gastos com factura por mês</div>
+          <div className={styles.cardSubtitle}>Soma mensal dos gastos com factura, no período filtrado</div>
+          <RankedBarChart data={byMonthWithInvoice} />
         </div>
       </div>
 
